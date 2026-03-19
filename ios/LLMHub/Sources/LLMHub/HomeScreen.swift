@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 
 struct FeatureCard {
@@ -13,6 +14,7 @@ struct HomeScreen: View {
     var onNavigateToChat: () -> Void
     var onNavigateToModels: () -> Void
     var onNavigateToSettings: () -> Void
+    @State private var githubStars: Int? = nil
 
     var features: [FeatureCard] {
         [
@@ -27,57 +29,146 @@ struct HomeScreen: View {
         ]
     }
 
-    let columns = [
-        GridItem(.flexible(), spacing: 14),
-        GridItem(.flexible(), spacing: 14)
-    ]
-
     var body: some View {
-        ScrollView {
-            VStack(spacing: 20) {
-                // Subtitle removed
+        GeometryReader { geo in
+            let horizontalPadding: CGFloat = 16
+            let usableWidth = geo.size.width - (horizontalPadding * 2)
+            let topBarHeight: CGFloat = 48
+            let topPadding: CGFloat = 10
+            let isLandscape = geo.size.width > geo.size.height
+            let spacing: CGFloat = {
+                if isLandscape {
+                    return min(max(usableWidth * 0.020, 12), 16)
+                }
+                return min(max(usableWidth * 0.014, 8), 12)
+            }()
 
-                LazyVGrid(columns: columns, spacing: 14) {
-                    ForEach(features, id: \.route) { feature in
-                        Button {
-                            if feature.route == "chat" {
-                                onNavigateToChat()
+            let columnsCount: Int = {
+                if isLandscape { return 4 }
+                if usableWidth >= 620 { return 3 }
+                return 2
+            }()
+            let rowsTarget: CGFloat = {
+                if isLandscape { return 2 }
+                return columnsCount == 3 ? 3 : 4
+            }()
+
+            let totalHorizontalSpacing = spacing * CGFloat(columnsCount - 1)
+            let cardWidth = (usableWidth - totalHorizontalSpacing) / CGFloat(columnsCount)
+
+            let gridTopPadding: CGFloat = isLandscape ? 12 : 8
+            let gridBottomPadding: CGFloat = 12
+            let totalVerticalSpacing = spacing * (rowsTarget - 1)
+            let reservedHeight = topBarHeight + topPadding + gridTopPadding + gridBottomPadding + totalVerticalSpacing
+            let availableHeight = max(200, geo.size.height - reservedHeight)
+            let rowFitHeight = availableHeight / rowsTarget
+            let cardHeight = min(max(rowFitHeight, 118), 280)
+
+            let columns = Array(repeating: GridItem(.flexible(), spacing: spacing), count: columnsCount)
+
+            VStack(spacing: 0) {
+                HStack(spacing: 12) {
+                    Text(settings.localized("app_name"))
+                        .font(.title.bold())
+                        .foregroundColor(.primary)
+
+                    Spacer()
+
+                    HStack(spacing: 10) {
+                        if let githubStars, githubStars > 0 {
+                            HStack(spacing: 4) {
+                                Image(systemName: "star.fill")
+                                    .font(.caption)
+                                Text("\(githubStars)")
+                                    .font(.subheadline.bold())
                             }
-                            // Other routes: coming soon
-                        } label: {
-                            FeatureCardView(feature: feature)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 5)
                         }
-                        .buttonStyle(.plain)
+
+                        Button {
+                            onNavigateToModels()
+                        } label: {
+                            Image(systemName: "arrow.down.circle")
+                                .font(.system(size: 22))
+                        }
+
+                        Button {
+                            onNavigateToSettings()
+                        } label: {
+                            Image(systemName: "gearshape")
+                                .font(.system(size: 22))
+                        }
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .overlay(
+                        Capsule()
+                            .stroke(
+                                LinearGradient(
+                                    colors: [Color.white.opacity(0.36), Color.white.opacity(0.10)],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                ),
+                                lineWidth: 1
+                            )
+                    )
+                    .shadow(color: .white.opacity(0.12), radius: 10, x: 0, y: 0)
+                    .clipShape(Capsule())
+                }
+                .padding(.horizontal, horizontalPadding)
+                .padding(.top, topPadding)
+                .frame(height: topBarHeight)
+
+                ScrollView {
+                    LazyVGrid(columns: columns, spacing: spacing) {
+                        ForEach(features, id: \.route) { feature in
+                            Button {
+                                if feature.route == "chat" {
+                                    onNavigateToChat()
+                                }
+                                // Other routes: coming soon
+                            } label: {
+                                FeatureCardView(feature: feature)
+                                    .frame(width: cardWidth, height: cardHeight)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal, horizontalPadding)
+                    .padding(.top, gridTopPadding)
+                    .padding(.bottom, gridBottomPadding)
+                }
+            }
+            .onAppear {
+                if githubStars == nil {
+                    Task {
+                        await loadGithubStars()
                     }
                 }
-                .padding(.horizontal, 16)
-                .padding(.bottom, 20)
             }
         }
-        .navigationTitle("")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .navigationBarLeading) {
-                Text(settings.localized("app_name"))
-                    .font(.title2.bold())
-                    .padding(.leading, 8)
-            }
-            ToolbarItem(placement: .navigationBarTrailing) {
-                HStack(spacing: 14) {
-                    Button {
-                        onNavigateToModels()
-                    } label: {
-                        Image(systemName: "arrow.down.circle")
-                            .font(.system(size: 18))
-                    }
-                    Button {
-                        onNavigateToSettings()
-                    } label: {
-                        Image(systemName: "gearshape")
-                            .font(.system(size: 18))
-                    }
+        .toolbar(.hidden, for: .navigationBar)
+    }
+
+    private func loadGithubStars() async {
+        guard let url = URL(string: "https://api.github.com/repos/timmyy123/LLM-Hub") else { return }
+        var request = URLRequest(url: url)
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else { return }
+            if let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                let stars = obj["stargazers_count"] as? Int
+            {
+                await MainActor.run {
+                    githubStars = stars
                 }
             }
+        } catch {
+            // Keep UI clean if network call fails.
         }
     }
 }
@@ -113,8 +204,7 @@ struct FeatureCardView: View {
             }
         }
         .padding(14)
-        .frame(maxWidth: .infinity, alignment: .center)
-        .frame(height: 155)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
         .background(
             LinearGradient(
                 gradient: Gradient(colors: feature.gradient),

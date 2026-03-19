@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 
 // MARK: - Chat ViewModel
@@ -11,7 +12,7 @@ class ChatViewModel: ObservableObject {
     @Published var isBackendLoading: Bool = false
     
     // Config Properties (Persisted)
-    @AppStorage("chat_max_tokens") var maxTokens: Double = 2048
+    @AppStorage("chat_max_tokens") var maxTokens: Double = 512
     @AppStorage("chat_top_k") var topK: Double = 64
     @AppStorage("chat_top_p") var topP: Double = 0.95
     @AppStorage("chat_temperature") var temperature: Double = 1.0
@@ -127,6 +128,9 @@ class ChatViewModel: ObservableObject {
                         self.updateLastAIMessageSync(content: content, tokens: tokens, tps: tps)
                     }
                 }
+                await MainActor.run {
+                    self.finishLastAIMessage()
+                }
             } catch {
                 await updateLastAIMessage(content: "Error: \(error.localizedDescription)", isGenerating: false)
             }
@@ -150,6 +154,14 @@ class ChatViewModel: ObservableObject {
             msgs[idx].isGenerating = isGenerating
             self.totalTokens = tokens
             self.tokensPerSecond = tps
+            self.messages = msgs
+        }
+    }
+
+    private func finishLastAIMessage() {
+        if let idx = messages.indices.last, !messages[idx].isFromUser {
+            var msgs = self.messages
+            msgs[idx].isGenerating = false
             self.messages = msgs
         }
     }
@@ -194,64 +206,47 @@ struct MessageBubble: View {
     @EnvironmentObject var settings: AppSettings
     let message: ChatMessage
     let onCopy: () -> Void
-    @State private var isCopied = false
     @State private var showActions = false
 
     var body: some View {
-        HStack(alignment: .bottom, spacing: 8) {
-            if message.isFromUser { Spacer(minLength: 40) }
-
-            if !message.isFromUser {
-                Image(systemName: "cpu")
-                    .font(.system(size: 16))
-                    .foregroundColor(.white)
-                    .frame(width: 28, height: 28)
-                    .background(Color.indigo.gradient)
-                    .clipShape(Circle())
-            }
-
-            VStack(alignment: message.isFromUser ? .trailing : .leading, spacing: 4) {
-                ZStack(alignment: .bottomTrailing) {
-                    Text(message.content.isEmpty && message.isGenerating ? "●●●" : (message.content.isEmpty ? " " : message.content))
+        VStack(alignment: .leading, spacing: 6) {
+            if message.isFromUser {
+                HStack {
+                    Spacer(minLength: 40)
+                    Text(message.content)
                         .font(.body)
-                        .foregroundColor(message.isFromUser ? .white : .primary)
+                        .foregroundColor(.white)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 10)
                         .background(
                             RoundedRectangle(cornerRadius: 18)
-                                .fill(message.isFromUser
-                                      ? LinearGradient(colors: [Color.indigo, Color.purple], startPoint: .topLeading, endPoint: .bottomTrailing)
-                                      : LinearGradient(colors: [Color(.secondarySystemBackground)], startPoint: .top, endPoint: .bottom))
+                                .fill(LinearGradient(colors: [Color.indigo, Color.purple], startPoint: .topLeading, endPoint: .bottomTrailing))
                         )
-                        .contentShape(RoundedRectangle(cornerRadius: 18))
                         .onLongPressGesture {
                             showActions = true
                         }
-
-                    if message.isGenerating {
-                        TypingIndicator()
-                            .padding(10)
-                    }
                 }
-
-                Text(message.timestamp, style: .time)
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-                    .padding(.horizontal, 4)
+            } else {
+                if message.isGenerating && message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    TypingIndicator()
+                        .padding(.vertical, 6)
+                } else {
+                    RenderMessageSegments(displayContent: message.content)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .onLongPressGesture {
+                            showActions = true
+                        }
+                }
             }
 
-            if !message.isFromUser { Spacer(minLength: 40) }
-            if message.isFromUser {
-                Image(systemName: "person.crop.circle.fill")
-                    .font(.system(size: 28))
-                    .foregroundColor(.indigo.opacity(0.7))
-            }
+            Text(message.timestamp, style: .time)
+                .font(.caption2)
+                .foregroundColor(.secondary)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .confirmationDialog(settings.localized("more_options"), isPresented: $showActions) {
             Button(settings.localized("copy_message")) {
                 onCopy()
-                isCopied = true
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2) { isCopied = false }
             }
             Button(settings.localized("cancel"), role: .cancel) {}
         }
@@ -275,6 +270,138 @@ struct TypingIndicator: View {
             withAnimation(.linear(duration: 1).repeatForever(autoreverses: false)) {
                 phase = .pi * 2
             }
+        }
+    }
+}
+
+private enum ParsedSegment {
+    case text(String)
+    case code(language: String?, content: String)
+}
+
+private struct RenderMessageSegments: View {
+    let displayContent: String
+
+    var body: some View {
+        let segments = parseSegments(normalized(displayContent))
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(Array(segments.enumerated()), id: \.offset) { item in
+                let segment = item.element
+                switch segment {
+                case .text(let text):
+                    MarkdownMessageText(text: text)
+                case .code(let language, let content):
+                    VStack(alignment: .leading, spacing: 6) {
+                        if let language, !language.isEmpty {
+                            Text(language)
+                                .font(.caption2.weight(.semibold))
+                                .foregroundColor(.secondary)
+                        }
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            Text(content.trimmingCharacters(in: .newlines))
+                                .font(.system(.body, design: .monospaced))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                    .padding(10)
+                    .background(Color.secondary.opacity(0.12))
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                }
+            }
+        }
+    }
+
+    private func normalized(_ raw: String) -> String {
+        var value = raw
+        let markers = ["<end_of_turn>", "<|eot_id|>", "<|endoftext|>", "</s>"]
+        for marker in markers {
+            value = value.replacingOccurrences(of: marker, with: "")
+        }
+
+        // Render block math in a code-style block for readable display.
+        value = value.replacingOccurrences(
+            of: #"\$\$([\s\S]*?)\$\$"#,
+            with: "```math\n$1\n```",
+            options: .regularExpression
+        )
+        // Render inline math as inline code-style segment.
+        value = value.replacingOccurrences(
+            of: #"\$(?!\$)([^\n$]+)\$"#,
+            with: "`$1`",
+            options: .regularExpression
+        )
+        return value
+    }
+
+    private func parseSegments(_ input: String) -> [ParsedSegment] {
+        let pattern = #"```([a-zA-Z0-9_+-]*)\n([\s\S]*?)```"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else {
+            return [.text(input)]
+        }
+
+        let nsInput = input as NSString
+        let matches = regex.matches(in: input, options: [], range: NSRange(location: 0, length: nsInput.length))
+        if matches.isEmpty {
+            return [.text(input)]
+        }
+
+        var segments: [ParsedSegment] = []
+        var cursor = 0
+
+        for match in matches {
+            if match.range.location > cursor {
+                let textPart = nsInput.substring(with: NSRange(location: cursor, length: match.range.location - cursor))
+                if !textPart.isEmpty {
+                    segments.append(.text(textPart))
+                }
+            }
+
+            let language: String? = {
+                let langRange = match.range(at: 1)
+                guard langRange.location != NSNotFound else { return nil }
+                let lang = nsInput.substring(with: langRange).trimmingCharacters(in: .whitespacesAndNewlines)
+                return lang.isEmpty ? nil : lang
+            }()
+
+            let code = nsInput.substring(with: match.range(at: 2))
+            segments.append(.code(language: language, content: code))
+            cursor = match.range.location + match.range.length
+        }
+
+        if cursor < nsInput.length {
+            let trailing = nsInput.substring(from: cursor)
+            if !trailing.isEmpty {
+                segments.append(.text(trailing))
+            }
+        }
+
+        return segments
+    }
+}
+
+private struct MarkdownMessageText: View {
+    let text: String
+
+    var body: some View {
+        let markdownWithBreaks = text.replacingOccurrences(of: "\n", with: "  \n")
+        if let attributed = try? AttributedString(
+            markdown: markdownWithBreaks,
+            options: .init(
+                interpretedSyntax: .full,
+                failurePolicy: .returnPartiallyParsedIfPossible
+            )
+        ) {
+            Text(attributed)
+                .font(.body)
+                .lineSpacing(4)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .textSelection(.enabled)
+        } else {
+            Text(text)
+                .font(.body)
+                .lineSpacing(4)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .textSelection(.enabled)
         }
     }
 }
@@ -412,6 +539,7 @@ struct ChatScreen: View {
     @State private var showDrawer = false
     @State private var showSettings = false
     @State private var copiedMessageId: UUID? = nil
+    @FocusState private var isComposerFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -460,15 +588,40 @@ struct ChatScreen: View {
                                     }
                                 }
                                 .id(msg.id)
-                                .padding(.horizontal, 12)
+                                .padding(.horizontal, 16)
                             }
                         }
                     }
                     .padding(.vertical, 12)
                 }
+                .scrollDismissesKeyboard(.interactively)
+                .onTapGesture {
+                    isComposerFocused = false
+                }
                 .onChange(of: vm.messages.count) { _, _ in
                     if let last = vm.messages.last {
                         withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
+                    }
+                }
+                .onChange(of: vm.currentSessionId) { _, _ in
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                        if let last = vm.messages.last {
+                            withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
+                        }
+                    }
+                }
+                .onChange(of: vm.messages.last?.content ?? "") { _, _ in
+                    if vm.isGenerating, let last = vm.messages.last {
+                        withAnimation(.easeOut(duration: 0.12)) {
+                            proxy.scrollTo(last.id, anchor: .bottom)
+                        }
+                    }
+                }
+                .onChange(of: isComposerFocused) { _, focused in
+                    if focused, let last = vm.messages.last {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                            withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
+                        }
                     }
                 }
             }
@@ -492,9 +645,11 @@ struct ChatScreen: View {
                     .padding(.vertical, 10)
                     .background(Color(.secondarySystemBackground))
                     .clipShape(RoundedRectangle(cornerRadius: 22))
+                    .focused($isComposerFocused)
                     .onSubmit { vm.sendMessage() }
 
                 Button {
+                    isComposerFocused = false
                     if vm.isGenerating {
                         vm.stopGeneration()
                     } else {

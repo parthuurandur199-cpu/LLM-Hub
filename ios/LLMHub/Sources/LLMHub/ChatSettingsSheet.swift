@@ -15,7 +15,7 @@ struct ChatSettingsSheet: View {
                         // Model Selection Header
                         VStack(spacing: 16) {
                             HStack(alignment: .center, spacing: 14) {
-                                Image(systemName: "chip.fill")
+                                Image(systemName: "cpu")
                                     .font(.system(size: 26))
                                     .foregroundColor(.indigo)
                                     .frame(width: 32)
