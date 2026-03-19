@@ -111,7 +111,7 @@ Acknowledgments
 
 Development Setup
 
-### Building from source
+### Android local development (Android Studio + Gradle)
 ```bash
 git clone https://github.com/timmyy123/LLM-Hub.git
 cd LLM-Hub/android
@@ -119,21 +119,23 @@ cd LLM-Hub/android
 ./gradlew installDebug
 ```
 
-### Setting up Hugging Face Token for Development
+### Android-only local configuration
+
+#### Setting up Hugging Face Token for Development
 To use private or gated models, add your HuggingFace token to `android/local.properties` (do NOT commit this file):
 ```properties
 HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ```
 Save and sync Gradle in Android Studio; the app will read `BuildConfig.HF_TOKEN` at build time.
 
-### Dev Premium Flag
+#### Dev Premium Flag
 To skip ads and unlock all premium features locally without a real IAP purchase, add this to `android/local.properties`:
 ```properties
 DEBUG_PREMIUM=true
 ```
 Set it back to `false` before making a production build.
 
-### Model License Acceptance
+#### Model License Acceptance
 Some models on HuggingFace (especially from Google and Meta) require explicit license acceptance before downloading. When building the app locally:
 
 1. Ensure you have a valid HuggingFace read token in `local.properties` (see above)
@@ -144,6 +146,42 @@ Some models on HuggingFace (especially from Google and Meta) require explicit li
    - Try downloading the model in the app again
 
 **Note:** This is only required for local development builds. The Play Store version uses different authentication and does not require manual license acceptance for each model.
+
+### iOS local development (macOS + Xcode)
+
+#### Prerequisites
+- macOS with Xcode installed (use a version that matches your iOS device version)
+- An Apple ID signed into Xcode (free Personal Team works for local device testing)
+- iPhone with Developer Mode enabled if you run on real hardware
+
+#### Build and run on iPhone
+1. Clone the repo and open the iOS project:
+```bash
+git clone https://github.com/timmyy123/LLM-Hub.git
+cd LLM-Hub
+open ios/LLMHub/LLMHub.xcodeproj
+```
+2. In Xcode, select target **LLMHub** → **Signing & Capabilities**:
+   - Set your **Team**
+   - Set a unique **Bundle Identifier** (for example: `com.yourname.llmhub`)
+   - Keep **Automatically manage signing** enabled
+3. Select your iPhone as the run destination and press **Run**.
+
+#### If you use Xcode beta
+If your phone is on a newer iOS build and requires Xcode beta support, switch CLI tools:
+```bash
+sudo xcode-select -s /Applications/Xcode-beta.app/Contents/Developer
+xcodebuild -version
+```
+
+#### Useful iOS dev troubleshooting
+- If signing fails, re-check Team + Bundle Identifier in target settings.
+- If build cache acts stale, clean DerivedData:
+```bash
+rm -rf ~/Library/Developer/Xcode/DerivedData/LLMHub-*
+```
+- Build logs: **Report Navigator** (`Cmd+9`)
+- Runtime logs: **Debug Console** (`Cmd+Shift+Y`)
 
 Contributing
 - Fork → branch → PR. See CONTRIBUTING.md (or open an issue/discussion if unsure).
