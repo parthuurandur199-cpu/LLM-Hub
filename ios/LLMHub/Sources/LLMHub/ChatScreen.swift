@@ -24,6 +24,7 @@ class ChatViewModel: ObservableObject {
     private let chatStore = ChatStore.shared
     private let llmBackend = LLMBackend.shared
     @Published var currentSessionId: UUID = UUID()
+    private var activeGeneratingMessageId: UUID?
     
     // Compute current title from sessionId
     var currentTitle: String {
@@ -37,6 +38,14 @@ class ChatViewModel: ObservableObject {
     }
 
     var chatSessions: [ChatSession] { chatStore.chatSessions }
+
+    var latestUserMessageId: UUID? {
+        messages.last(where: { $0.isFromUser })?.id
+    }
+
+    var latestAssistantMessageId: UUID? {
+        messages.last(where: { !$0.isFromUser && !$0.isGenerating && !$0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })?.id
+    }
     
     var messages: [ChatMessage] {
         get {
@@ -108,6 +117,7 @@ class ChatViewModel: ObservableObject {
 
         let aiMsg = ChatMessage(content: "", isFromUser: false, isGenerating: true)
         messages.append(aiMsg)
+        activeGeneratingMessageId = aiMsg.id
         isGenerating = true
 
         streamingTask = Task {
@@ -128,15 +138,14 @@ class ChatViewModel: ObservableObject {
                         self.updateLastAIMessageSync(content: content, tokens: tokens, tps: tps)
                     }
                 }
-                await MainActor.run {
-                    self.finishLastAIMessage()
-                }
+                await MainActor.run { self.finishGeneratingMessage() }
             } catch {
                 await updateLastAIMessage(content: "Error: \(error.localizedDescription)", isGenerating: false)
             }
             
             await MainActor.run {
                 self.isGenerating = false
+                self.activeGeneratingMessageId = nil
             }
         }
     }
@@ -148,30 +157,56 @@ class ChatViewModel: ObservableObject {
     }
 
     private func updateLastAIMessageSync(content: String, tokens: Int = 0, tps: Double = 0, isGenerating: Bool = true) {
-        if let idx = messages.indices.last, !messages[idx].isFromUser {
+        let targetIndex: Int?
+        if let activeId = activeGeneratingMessageId {
+            targetIndex = messages.firstIndex(where: { $0.id == activeId })
+        } else {
+            targetIndex = messages.indices.last
+        }
+
+        if let idx = targetIndex, !messages[idx].isFromUser {
             var msgs = self.messages
             msgs[idx].content = content
             msgs[idx].isGenerating = isGenerating
             self.totalTokens = tokens
             self.tokensPerSecond = tps
+            msgs[idx].tokenCount = tokens > 0 ? tokens : msgs[idx].tokenCount
+            msgs[idx].tokensPerSecond = tps > 0 ? tps : msgs[idx].tokensPerSecond
             self.messages = msgs
         }
     }
 
-    private func finishLastAIMessage() {
-        if let idx = messages.indices.last, !messages[idx].isFromUser {
+    private func finishGeneratingMessage() {
+        let targetIndex: Int?
+        if let activeId = activeGeneratingMessageId {
+            targetIndex = messages.firstIndex(where: { $0.id == activeId })
+        } else {
+            targetIndex = messages.indices.last
+        }
+
+        if let idx = targetIndex, !messages[idx].isFromUser {
             var msgs = self.messages
             msgs[idx].isGenerating = false
+            if totalTokens > 0 {
+                msgs[idx].tokenCount = totalTokens
+                msgs[idx].tokensPerSecond = tokensPerSecond
+            }
             self.messages = msgs
         }
+        activeGeneratingMessageId = nil
     }
 
     func stopGeneration() {
         streamingTask?.cancel()
         streamingTask = nil
-        if let idx = messages.indices.last, !messages[idx].isFromUser {
+        if let activeId = activeGeneratingMessageId,
+           let idx = messages.firstIndex(where: { $0.id == activeId }),
+           !messages[idx].isFromUser {
+            messages[idx].isGenerating = false
+        } else if let idx = messages.indices.last, !messages[idx].isFromUser {
             messages[idx].isGenerating = false
         }
+        activeGeneratingMessageId = nil
         isGenerating = false
     }
 
@@ -198,6 +233,84 @@ class ChatViewModel: ObservableObject {
         objectWillChange.send()
     }
 
+    func regenerateResponse(for assistantMessageId: UUID) {
+        guard !isGenerating else { return }
+        guard let assistantIndex = messages.firstIndex(where: { $0.id == assistantMessageId && !$0.isFromUser }) else { return }
+        guard let userIndex = messages[..<assistantIndex].lastIndex(where: { $0.isFromUser }) else { return }
+
+        let prompt = messages[userIndex].content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prompt.isEmpty else { return }
+
+        var msgs = messages
+        msgs[assistantIndex].content = ""
+        msgs[assistantIndex].isGenerating = true
+        msgs[assistantIndex].tokenCount = nil
+        msgs[assistantIndex].tokensPerSecond = nil
+        messages = msgs
+
+        totalTokens = 0
+        tokensPerSecond = 0
+        activeGeneratingMessageId = assistantMessageId
+        isGenerating = true
+
+        streamingTask = Task {
+            await loadModelIfNecessary()
+
+            do {
+                if !llmBackend.isLoaded {
+                    let msg = AppSettings.shared.localized("please_download_model")
+                    await updateLastAIMessage(content: msg, isGenerating: false)
+                    await MainActor.run {
+                        self.isGenerating = false
+                        self.activeGeneratingMessageId = nil
+                    }
+                    return
+                }
+
+                try await llmBackend.generate(prompt: prompt) { [weak self] content, tokens, tps in
+                    Task { @MainActor [weak self] in
+                        guard let self = self else { return }
+                        self.updateLastAIMessageSync(content: content, tokens: tokens, tps: tps)
+                    }
+                }
+                await MainActor.run { self.finishGeneratingMessage() }
+            } catch {
+                await updateLastAIMessage(content: "Error: \(error.localizedDescription)", isGenerating: false)
+            }
+
+            await MainActor.run {
+                self.isGenerating = false
+                self.activeGeneratingMessageId = nil
+            }
+        }
+    }
+
+    func editAssistantMessage(_ messageId: UUID, newText: String) {
+        let trimmed = newText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        guard let idx = messages.firstIndex(where: { $0.id == messageId && !$0.isFromUser }) else { return }
+        var msgs = messages
+        msgs[idx].content = trimmed
+        messages = msgs
+    }
+
+    func editUserPrompt(_ messageId: UUID, newText: String) {
+        guard !isGenerating else { return }
+        let trimmed = newText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        guard let userIndex = messages.firstIndex(where: { $0.id == messageId && $0.isFromUser }) else { return }
+
+        var msgs = messages
+        msgs[userIndex].content = trimmed
+        messages = msgs
+
+        let nextIndex = userIndex + 1
+        if nextIndex < messages.count,
+           let assistantIndex = messages[nextIndex...].firstIndex(where: { !$0.isFromUser }) {
+            regenerateResponse(for: messages[assistantIndex].id)
+        }
+    }
+
     private var streamingTask: Task<Void, Never>?
 }
 
@@ -206,36 +319,155 @@ struct MessageBubble: View {
     @EnvironmentObject var settings: AppSettings
     let message: ChatMessage
     let onCopy: () -> Void
+    let onEditUserMessage: ((String) -> Void)?
+    let onEditAssistantMessage: ((String) -> Void)?
+    let onRegenerateResponse: (() -> Void)?
     @State private var showActions = false
+    @State private var isEditing = false
+    @State private var editedText = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             if message.isFromUser {
                 HStack {
                     Spacer(minLength: 40)
-                    Text(message.content)
-                        .font(.body)
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 10)
-                        .background(
-                            RoundedRectangle(cornerRadius: 18)
-                                .fill(LinearGradient(colors: [Color.indigo, Color.purple], startPoint: .topLeading, endPoint: .bottomTrailing))
-                        )
-                        .onLongPressGesture {
-                            showActions = true
+                    if isEditing {
+                        VStack(alignment: .trailing, spacing: 8) {
+                            TextEditor(text: $editedText)
+                                .frame(minHeight: 90)
+                                .padding(8)
+                                .background(Color(.secondarySystemBackground))
+                                .clipShape(RoundedRectangle(cornerRadius: 12))
+                            HStack(spacing: 8) {
+                                Button {
+                                    isEditing = false
+                                    editedText = ""
+                                } label: {
+                                    Image(systemName: "xmark")
+                                }
+                                Button {
+                                    let trimmed = editedText.trimmingCharacters(in: .whitespacesAndNewlines)
+                                    if !trimmed.isEmpty {
+                                        onEditUserMessage?(trimmed)
+                                        isEditing = false
+                                        editedText = ""
+                                    }
+                                } label: {
+                                    Image(systemName: "checkmark")
+                                }
+                                .disabled(editedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            }
+                            .font(.caption)
+                            .foregroundColor(.secondary)
                         }
+                        .frame(maxWidth: 320)
+                    } else {
+                        Text(message.content)
+                            .font(.body)
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
+                            .background(
+                                RoundedRectangle(cornerRadius: 18)
+                                    .fill(LinearGradient(colors: [Color.indigo, Color.purple], startPoint: .topLeading, endPoint: .bottomTrailing))
+                            )
+                            .onLongPressGesture {
+                                showActions = true
+                            }
+                    }
                 }
             } else {
                 if message.isGenerating && message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     TypingIndicator()
                         .padding(.vertical, 6)
                 } else {
-                    RenderMessageSegments(displayContent: message.content)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .onLongPressGesture {
-                            showActions = true
+                    if isEditing {
+                        VStack(alignment: .leading, spacing: 8) {
+                            TextEditor(text: $editedText)
+                                .frame(minHeight: 100)
+                                .padding(8)
+                                .background(Color(.secondarySystemBackground))
+                                .clipShape(RoundedRectangle(cornerRadius: 12))
+                            HStack(spacing: 10) {
+                                Button {
+                                    isEditing = false
+                                    editedText = ""
+                                } label: {
+                                    Image(systemName: "xmark")
+                                }
+                                Button {
+                                    let trimmed = editedText.trimmingCharacters(in: .whitespacesAndNewlines)
+                                    if !trimmed.isEmpty {
+                                        onEditAssistantMessage?(trimmed)
+                                        isEditing = false
+                                        editedText = ""
+                                    }
+                                } label: {
+                                    Image(systemName: "checkmark")
+                                }
+                                .disabled(editedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            }
+                            .font(.caption)
+                            .foregroundColor(.secondary)
                         }
+                    } else {
+                        RenderMessageSegments(displayContent: message.content)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .onLongPressGesture {
+                                showActions = true
+                            }
+                    }
+                }
+            }
+
+            if !isEditing && !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                HStack(spacing: 8) {
+                    Button(action: onCopy) {
+                        Image(systemName: "doc.on.doc")
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundColor(.secondary)
+
+                    if message.isFromUser, let onEditUserMessage {
+                        Button {
+                            editedText = message.content
+                            isEditing = true
+                        } label: {
+                            Image(systemName: "pencil")
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundColor(.secondary)
+                    }
+
+                    if !message.isFromUser, let onEditAssistantMessage {
+                        Button {
+                            editedText = message.content
+                            isEditing = true
+                        } label: {
+                            Image(systemName: "pencil")
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundColor(.secondary)
+                    }
+
+                    if !message.isFromUser, let onRegenerateResponse {
+                        Button(action: onRegenerateResponse) {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundColor(.secondary)
+                    }
+
+                    Spacer()
+
+                    if !message.isFromUser,
+                       let tokenCount = message.tokenCount,
+                       let tps = message.tokensPerSecond,
+                       tokenCount > 0 {
+                        Label(String(format: settings.localized("tokens_per_second_format"), tokenCount, tps), systemImage: "bolt.fill")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
                 }
             }
 
@@ -571,12 +803,6 @@ struct ChatScreen: View {
                         .clipShape(Capsule())
                     }
                     Spacer()
-                    if vm.totalTokens > 0 {
-                        Label(String(format: settings.localized("tokens_per_second_format"), vm.totalTokens, vm.tokensPerSecond),
-                              systemImage: "bolt.fill")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
@@ -590,13 +816,34 @@ struct ChatScreen: View {
                             emptyState
                         } else {
                             ForEach(vm.messages) { msg in
-                                MessageBubble(message: msg) {
-                                    vm.copyMessage(msg)
-                                    copiedMessageId = msg.id
-                                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                                        copiedMessageId = nil
-                                    }
-                                }
+                                let isLatestAssistant = (msg.id == vm.latestAssistantMessageId)
+                                let canRegenerate = isLatestAssistant && !vm.isGenerating && !msg.isGenerating
+                                let canEditUser = msg.isFromUser && msg.id == vm.latestUserMessageId && !vm.isGenerating
+                                let canEditAssistant = !msg.isFromUser && !vm.isGenerating && !msg.isGenerating
+                                let regenerateAction: (() -> Void)? = canRegenerate ? {
+                                    vm.regenerateResponse(for: msg.id)
+                                } : nil
+                                MessageBubble(
+                                    message: msg,
+                                    onCopy: {
+                                        vm.copyMessage(msg)
+                                        copiedMessageId = msg.id
+                                        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                                            copiedMessageId = nil
+                                        }
+                                    },
+                                    onEditUserMessage: { updatedPrompt in
+                                        if canEditUser {
+                                            vm.editUserPrompt(msg.id, newText: updatedPrompt)
+                                        }
+                                    },
+                                    onEditAssistantMessage: { updatedResponse in
+                                        if canEditAssistant {
+                                            vm.editAssistantMessage(msg.id, newText: updatedResponse)
+                                        }
+                                    },
+                                    onRegenerateResponse: regenerateAction
+                                )
                                 .id(msg.id)
                                 .padding(.horizontal, 16)
                             }

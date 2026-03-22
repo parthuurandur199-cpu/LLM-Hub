@@ -32,7 +32,8 @@ struct HomeScreen: View {
     var body: some View {
         GeometryReader { geo in
             let horizontalPadding: CGFloat = 16
-            let usableWidth = geo.size.width - (horizontalPadding * 2)
+            let rawUsableWidth = geo.size.width - (horizontalPadding * 2)
+            let usableWidth = max(1, rawUsableWidth)
             let topBarHeight: CGFloat = 48
             let topPadding: CGFloat = 10
             let isLandscape = geo.size.width > geo.size.height
@@ -54,7 +55,8 @@ struct HomeScreen: View {
             }()
 
             let totalHorizontalSpacing = spacing * CGFloat(columnsCount - 1)
-            let cardWidth = (usableWidth - totalHorizontalSpacing) / CGFloat(columnsCount)
+            let computedCardWidth = (usableWidth - totalHorizontalSpacing) / CGFloat(columnsCount)
+            let cardWidth = max(72, computedCardWidth.isFinite ? computedCardWidth : 72)
 
             let gridTopPadding: CGFloat = isLandscape ? 12 : 8
             let gridBottomPadding: CGFloat = 12
@@ -62,7 +64,8 @@ struct HomeScreen: View {
             let reservedHeight = topBarHeight + topPadding + gridTopPadding + gridBottomPadding + totalVerticalSpacing
             let availableHeight = max(200, geo.size.height - reservedHeight)
             let rowFitHeight = availableHeight / rowsTarget
-            let cardHeight = min(max(rowFitHeight, 118), 280)
+            let safeRowFitHeight = rowFitHeight.isFinite ? rowFitHeight : 118
+            let cardHeight = min(max(safeRowFitHeight, 118), 280)
 
             let columns = Array(repeating: GridItem(.flexible(), spacing: spacing), count: columnsCount)
 

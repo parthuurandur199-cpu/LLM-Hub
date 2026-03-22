@@ -29,6 +29,7 @@ class ModelDownloadViewModel: ObservableObject {
     @Published var downloadStates: [String: DownloadState] = [:]
     @Published var expandedModelId: String? = nil
     private let completionThresholdRatio: Double = 0.98
+    private let pendingDownloadsKey = "ios_pending_model_download_ids"
 
     init() {
         // Initialize with default states
@@ -36,6 +37,28 @@ class ModelDownloadViewModel: ObservableObject {
             downloadStates[model.id] = .notDownloaded
         }
         refreshStatuses()
+        resumePendingDownloads()
+    }
+
+    private func loadPendingDownloadIDs() -> Set<String> {
+        let ids = UserDefaults.standard.stringArray(forKey: pendingDownloadsKey) ?? []
+        return Set(ids)
+    }
+
+    private func savePendingDownloadIDs(_ ids: Set<String>) {
+        UserDefaults.standard.set(Array(ids), forKey: pendingDownloadsKey)
+    }
+
+    private func markPending(_ id: String) {
+        var ids = loadPendingDownloadIDs()
+        ids.insert(id)
+        savePendingDownloadIDs(ids)
+    }
+
+    private func clearPending(_ id: String) {
+        var ids = loadPendingDownloadIDs()
+        ids.remove(id)
+        savePendingDownloadIDs(ids)
     }
 
     func refreshStatuses() {
@@ -97,6 +120,7 @@ class ModelDownloadViewModel: ObservableObject {
     func startDownload(_ model: AIModel) {
         // Cancel existing task if any
         downloadTasks[model.id]?.cancel()
+        markPending(model.id)
         
         let task = Task {
             guard let documentsDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
@@ -125,6 +149,7 @@ class ModelDownloadViewModel: ObservableObject {
                 await MainActor.run {
                     self.downloadStates[model.id] = .downloaded
                     self.downloadTasks.removeValue(forKey: model.id)
+                    self.clearPending(model.id)
                 }
             } catch is CancellationError {
                 await MainActor.run {
@@ -140,9 +165,16 @@ class ModelDownloadViewModel: ObservableObject {
                     self.downloadStates[model.id] = .paused
                     self.autoResumableDownloads.insert(model.id)
                 }
+            } catch let error as NSError where error.domain == "ModelDownloader" && error.code == -2 {
+                await MainActor.run {
+                    // Incomplete file set after interruption is recoverable by resuming.
+                    self.downloadStates[model.id] = .paused
+                    self.autoResumableDownloads.insert(model.id)
+                }
             } catch {
                 await MainActor.run {
                     self.downloadStates[model.id] = .error(message: error.localizedDescription)
+                    self.clearPending(model.id)
                 }
             }
         }
@@ -153,6 +185,7 @@ class ModelDownloadViewModel: ObservableObject {
         downloadTasks[id]?.cancel()
         downloadTasks.removeValue(forKey: id)
         downloadStates[id] = .paused
+        clearPending(id)
     }
 
     func resumeDownload(_ id: String) {
@@ -172,9 +205,29 @@ class ModelDownloadViewModel: ObservableObject {
         }
     }
 
+    func resumePendingDownloads() {
+        let ids = loadPendingDownloadIDs()
+        for id in ids {
+            guard downloadTasks[id] == nil,
+                  let model = models.first(where: { $0.id == id }) else {
+                continue
+            }
+
+            switch downloadStates[id] {
+            case .downloaded:
+                clearPending(id)
+            case .downloading:
+                continue
+            case .paused, .notDownloaded, .error, .none:
+                startDownload(model)
+            }
+        }
+    }
+
     func deleteModel(_ id: String) {
         downloadTasks[id]?.cancel()
         downloadTasks.removeValue(forKey: id)
+        clearPending(id)
         
         let model = models.first(where: { $0.id == id })
         if let model = model {
@@ -242,7 +295,9 @@ struct ModelRowView: View {
                             if model.supportsAudio {
                                 capabilityBadge(settings.localized("audio"), color: .orange)
                             }
-                            capabilityBadge(settings.localized("text_only"), color: .indigo)
+                            if !model.supportsVision && !model.supportsAudio {
+                                capabilityBadge(settings.localized("text_only"), color: .indigo)
+                            }
                         }
                     }
 
@@ -375,8 +430,8 @@ struct ModelRowView: View {
                     }
                     .font(.subheadline.bold())
                     .padding(.horizontal, 16)
-                    .padding(.bottom, 12)
                 }
+                .padding(.bottom, 12)
             }
         }
         .background(Color(.secondarySystemBackground))
@@ -518,10 +573,12 @@ struct ModelDownloadScreen: View {
         }
         .onAppear {
             vm.refreshStatuses()
+            vm.resumePendingDownloads()
         }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active {
                 vm.resumeAutoResumableDownloads()
+                vm.resumePendingDownloads()
             }
         }
     }

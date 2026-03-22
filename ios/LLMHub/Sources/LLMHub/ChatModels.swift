@@ -7,13 +7,25 @@ public struct ChatMessage: Identifiable, Equatable, Sendable, Codable {
     public let isFromUser: Bool
     public let timestamp: Date
     public var isGenerating: Bool
+    public var tokenCount: Int?
+    public var tokensPerSecond: Double?
 
-    public init(id: UUID = UUID(), content: String, isFromUser: Bool, timestamp: Date = Date(), isGenerating: Bool = false) {
+    public init(
+        id: UUID = UUID(),
+        content: String,
+        isFromUser: Bool,
+        timestamp: Date = Date(),
+        isGenerating: Bool = false,
+        tokenCount: Int? = nil,
+        tokensPerSecond: Double? = nil
+    ) {
         self.id = id
         self.content = content
         self.isFromUser = isFromUser
         self.timestamp = timestamp
         self.isGenerating = isGenerating
+        self.tokenCount = tokenCount
+        self.tokensPerSecond = tokensPerSecond
     }
 }
 

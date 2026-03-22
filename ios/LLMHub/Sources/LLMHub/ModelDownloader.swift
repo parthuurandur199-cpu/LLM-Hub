@@ -31,6 +31,7 @@ public actor ModelDownloader {
     
     private let urlSession: URLSession
     private let completionThresholdRatio: Double = 0.98
+    private let optionalModelFiles: Set<String> = ["chat_template.jinja"]
     
     private init() {
         let config = URLSessionConfiguration.default
@@ -73,6 +74,15 @@ public actor ModelDownloader {
         }
         return max(0, fileSize)
     }
+
+    private func totalSizeFromContentRange(_ contentRange: String?) -> Int64? {
+        guard let contentRange else { return nil }
+        // 416 responses often include: "bytes */123456"
+        guard let slash = contentRange.lastIndex(of: "/") else { return nil }
+        let tail = contentRange[contentRange.index(after: slash)...].trimmingCharacters(in: .whitespaces)
+        guard tail != "*", let value = Int64(tail), value > 0 else { return nil }
+        return value
+    }
     
     public func downloadModel(
         _ model: AIModel,
@@ -82,7 +92,9 @@ public actor ModelDownloader {
     ) async throws {
         let totalSize = model.sizeBytes
         var downloadedBytesPerFile: [String: Int64] = [:]
+        var expectedBytesPerFile: [String: Int64] = [:]
         let startTime = Date()
+        var transferredBytesThisDownloadSession: Int64 = 0
         
         // Ensure clean destination
         if !FileManager.default.fileExists(atPath: destinationDir.path) {
@@ -99,6 +111,10 @@ public actor ModelDownloader {
             guard let fileURL = URL(string: urlString) else { continue }
             
             let destinationFileURL = destinationDir.appendingPathComponent(fileName)
+            let expectedSize = await remoteFileSize(fileURL: fileURL, hfToken: hfToken)
+            if let expectedSize {
+                expectedBytesPerFile[fileName] = expectedSize
+            }
             
             // Check if file exists and is already downloaded fully.
             // We only skip when local size matches remote Content-Length.
@@ -106,12 +122,11 @@ public actor ModelDownloader {
                 if let attrs = try? FileManager.default.attributesOfItem(atPath: destinationFileURL.path),
                    let fileSize = attrs[.size] as? Int64,
                    fileSize > 0 {
-                    let expectedSize = await remoteFileSize(fileURL: fileURL, hfToken: hfToken)
-                    if expectedSize == nil || expectedSize == fileSize {
+                    if let expectedSize, expectedSize == fileSize {
                         downloadedBytesPerFile[fileName] = fileSize
                         let currentTotal = downloadedBytesPerFile.values.reduce(0, +)
                         let elapsed = Date().timeIntervalSince(startTime)
-                        let speed = elapsed > 0 ? Double(currentTotal) / elapsed : 0
+                        let speed = elapsed > 0 ? Double(transferredBytesThisDownloadSession) / elapsed : 0
                         onProgress(DownloadUpdate(bytesDownloaded: currentTotal, totalBytes: totalSize, speedBytesPerSecond: speed))
                         continue
                     }
@@ -121,6 +136,7 @@ public actor ModelDownloader {
             let maxRetries = 6
             var attempt = 0
             var finishedFile = false
+            var restartedAfter416 = false
 
             while !finishedFile {
                 do {
@@ -140,8 +156,37 @@ public actor ModelDownloader {
 
                     // Critical 404/403 Handling
                     if !(200...299).contains(httpResponse.statusCode) {
+                        if httpResponse.statusCode == 416 {
+                            let rangeHeaderTotal = totalSizeFromContentRange(httpResponse.value(forHTTPHeaderField: "Content-Range"))
+                            let refreshedExpected: Int64?
+                            if let expectedSize {
+                                refreshedExpected = expectedSize
+                            } else if let rangeHeaderTotal {
+                                refreshedExpected = rangeHeaderTotal
+                            } else {
+                                refreshedExpected = await remoteFileSize(fileURL: fileURL, hfToken: hfToken)
+                            }
+                            if let refreshedExpected, existingBytes >= refreshedExpected {
+                                downloadedBytesPerFile[fileName] = refreshedExpected
+                                let currentTotal = downloadedBytesPerFile.values.reduce(0, +)
+                                let elapsed = Date().timeIntervalSince(startTime)
+                                let speed = elapsed > 0 ? Double(transferredBytesThisDownloadSession) / elapsed : 0
+                                onProgress(DownloadUpdate(bytesDownloaded: currentTotal, totalBytes: totalSize, speedBytesPerSecond: speed))
+                                finishedFile = true
+                                break
+                            }
+
+                            // Range is invalid for current server file length; restart this file once from zero.
+                            if !restartedAfter416 {
+                                try? FileManager.default.removeItem(at: destinationFileURL)
+                                downloadedBytesPerFile[fileName] = 0
+                                restartedAfter416 = true
+                                continue
+                            }
+                        }
+
                         // Ignore missing optional files (like chat_template.jinja in some older MLX repos)
-                        if httpResponse.statusCode == 404 && fileName == "chat_template.jinja" {
+                        if httpResponse.statusCode == 404 && optionalModelFiles.contains(fileName) {
                             finishedFile = true
                             break
                         }
@@ -178,27 +223,31 @@ public actor ModelDownloader {
                         byteCountPerFile += 1
 
                         if buffer.count >= chunkSize {
+                            let flushedBytes = Int64(buffer.count)
                             try fileHandle.write(contentsOf: buffer)
                             buffer.removeAll(keepingCapacity: true)
+                            transferredBytesThisDownloadSession += flushedBytes
 
                             // Periodic Progress Update
                             downloadedBytesPerFile[fileName] = byteCountPerFile
                             let currentTotal = downloadedBytesPerFile.values.reduce(0, +)
                             let elapsed = Date().timeIntervalSince(startTime)
-                            let speed = elapsed > 0 ? Double(currentTotal) / elapsed : 0
+                            let speed = elapsed > 0 ? Double(transferredBytesThisDownloadSession) / elapsed : 0
                             onProgress(DownloadUpdate(bytesDownloaded: currentTotal, totalBytes: totalSize, speedBytesPerSecond: speed))
                         }
                     }
 
                     if !buffer.isEmpty {
+                        let flushedBytes = Int64(buffer.count)
                         try fileHandle.write(contentsOf: buffer)
                         buffer.removeAll()
+                        transferredBytesThisDownloadSession += flushedBytes
                     }
 
                     downloadedBytesPerFile[fileName] = byteCountPerFile
                     let currentTotal = downloadedBytesPerFile.values.reduce(0, +)
                     let elapsed = Date().timeIntervalSince(startTime)
-                    let speed = elapsed > 0 ? Double(currentTotal) / elapsed : 0
+                    let speed = elapsed > 0 ? Double(transferredBytesThisDownloadSession) / elapsed : 0
                     onProgress(DownloadUpdate(bytesDownloaded: currentTotal, totalBytes: totalSize, speedBytesPerSecond: speed))
                     finishedFile = true
                 } catch let error as URLError where error.code.isTransientDownloadFailure && attempt < maxRetries {
@@ -209,17 +258,44 @@ public actor ModelDownloader {
             }
         }
 
-        let finalBytes = downloadedBytesPerFile.values.reduce(0, +)
+        var finalBytes: Int64 = 0
+        for fileName in model.files {
+            if optionalModelFiles.contains(fileName) {
+                continue
+            }
+
+            let localURL = destinationDir.appendingPathComponent(fileName)
+            let localBytes = localFileSize(at: localURL)
+            finalBytes += localBytes
+
+            if let expectedBytes = expectedBytesPerFile[fileName], expectedBytes > 0 {
+                if localBytes != expectedBytes {
+                    throw NSError(
+                        domain: "ModelDownloader",
+                        code: -2,
+                        userInfo: [
+                            NSLocalizedDescriptionKey:
+                                "Incomplete file: \(fileName) (\(localBytes) / \(expectedBytes) bytes)"
+                        ]
+                    )
+                }
+            } else if localBytes <= 0 {
+                throw NSError(
+                    domain: "ModelDownloader",
+                    code: -2,
+                    userInfo: [
+                        NSLocalizedDescriptionKey:
+                            "Missing downloaded file: \(fileName)"
+                    ]
+                )
+            }
+        }
+
         let minimumExpectedBytes = Int64(Double(totalSize) * completionThresholdRatio)
         if finalBytes < minimumExpectedBytes {
-            throw NSError(
-                domain: "ModelDownloader",
-                code: -2,
-                userInfo: [
-                    NSLocalizedDescriptionKey:
-                        "Incomplete download: \(finalBytes) / \(totalSize) bytes"
-                ]
-            )
+            // Keep this guard as a soft sanity check for metadata-based progress,
+            // but by this point each file has already been validated above.
+            onProgress(DownloadUpdate(bytesDownloaded: finalBytes, totalBytes: totalSize, speedBytesPerSecond: 0))
         }
     }
 }
