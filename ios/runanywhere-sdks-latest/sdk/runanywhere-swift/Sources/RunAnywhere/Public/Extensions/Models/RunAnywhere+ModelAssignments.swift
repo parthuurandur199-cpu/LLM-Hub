@@ -43,6 +43,7 @@ public extension RunAnywhere {
     ///   - modality: Model category (default: .language for LLMs)
     ///   - artifactType: How the model is packaged (archive, single file, etc.). If nil, inferred from URL.
     ///   - memoryRequirement: Estimated memory usage in bytes
+    ///   - contextLength: Context window size to store in model metadata
     ///   - supportsThinking: Whether the model supports reasoning/thinking
     /// - Returns: The created ModelInfo
     @discardableResult
@@ -54,6 +55,7 @@ public extension RunAnywhere {
         modality: ModelCategory = .language,
         artifactType: ModelArtifactType? = nil,
         memoryRequirement: Int64? = nil,
+        contextLength: Int? = nil,
         supportsThinking: Bool = false
     ) -> ModelInfo {
         // Generate model ID from URL filename if not provided
@@ -73,7 +75,7 @@ public extension RunAnywhere {
             localPath: nil,
             artifactType: artifactType,
             downloadSize: memoryRequirement,
-            contextLength: modality.requiresContextLength ? 2048 : nil,
+            contextLength: modality.requiresContextLength ? (contextLength ?? 2048) : contextLength,
             supportsThinking: supportsThinking,
             description: "User-added model",
             source: .local
@@ -103,6 +105,7 @@ public extension RunAnywhere {
     ///   - modality: Model category (default: .language for LLMs)
     ///   - artifactType: How the model is packaged (archive, single file, etc.). If nil, inferred from URL.
     ///   - memoryRequirement: Estimated memory usage in bytes
+    ///   - contextLength: Context window size to store in model metadata
     ///   - supportsThinking: Whether the model supports reasoning/thinking
     /// - Returns: The created ModelInfo, or nil if URL is invalid
     @discardableResult
@@ -114,6 +117,7 @@ public extension RunAnywhere {
         modality: ModelCategory = .language,
         artifactType: ModelArtifactType? = nil,
         memoryRequirement: Int64? = nil,
+        contextLength: Int? = nil,
         supportsThinking: Bool = false
     ) -> ModelInfo? {
         guard let url = URL(string: urlString) else {
@@ -128,6 +132,7 @@ public extension RunAnywhere {
             modality: modality,
             artifactType: artifactType,
             memoryRequirement: memoryRequirement,
+            contextLength: contextLength,
             supportsThinking: supportsThinking
         )
     }
@@ -154,6 +159,7 @@ public extension RunAnywhere {
     ///   - framework: Target inference framework
     ///   - modality: Model category
     ///   - memoryRequirement: Estimated memory usage in bytes
+    ///   - contextLength: Context window size to store in model metadata
     /// - Returns: The created ModelInfo
     @discardableResult
     static func registerMultiFileModel(
@@ -162,7 +168,8 @@ public extension RunAnywhere {
         files: [ModelFileDescriptor],
         framework: InferenceFramework,
         modality: ModelCategory = .multimodal,
-        memoryRequirement: Int64? = nil
+        memoryRequirement: Int64? = nil,
+        contextLength: Int? = nil
     ) -> ModelInfo {
         // Cache the file descriptors (C++ registry doesn't preserve them)
         multiFileCacheLock.lock()
@@ -180,7 +187,7 @@ public extension RunAnywhere {
             localPath: nil,
             artifactType: .multiFile(files),
             downloadSize: memoryRequirement,
-            contextLength: nil,
+            contextLength: modality.requiresContextLength ? (contextLength ?? 2048) : contextLength,
             supportsThinking: false,
             description: "Multi-file model (\(files.count) files)",
             source: .local

@@ -9,6 +9,8 @@ public struct ChatMessage: Identifiable, Equatable, Sendable, Codable {
     public var isGenerating: Bool
     public var tokenCount: Int?
     public var tokensPerSecond: Double?
+    public var attachmentImagePath: String?
+    public var attachmentAudioPath: String?
 
     public init(
         id: UUID = UUID(),
@@ -17,7 +19,9 @@ public struct ChatMessage: Identifiable, Equatable, Sendable, Codable {
         timestamp: Date = Date(),
         isGenerating: Bool = false,
         tokenCount: Int? = nil,
-        tokensPerSecond: Double? = nil
+        tokensPerSecond: Double? = nil,
+        attachmentImagePath: String? = nil,
+        attachmentAudioPath: String? = nil
     ) {
         self.id = id
         self.content = content
@@ -26,6 +30,8 @@ public struct ChatMessage: Identifiable, Equatable, Sendable, Codable {
         self.isGenerating = isGenerating
         self.tokenCount = tokenCount
         self.tokensPerSecond = tokensPerSecond
+        self.attachmentImagePath = attachmentImagePath
+        self.attachmentAudioPath = attachmentAudioPath
     }
 }
 

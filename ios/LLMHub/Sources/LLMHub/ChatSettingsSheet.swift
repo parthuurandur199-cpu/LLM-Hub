@@ -77,7 +77,8 @@ struct ChatSettingsSheet: View {
                             }
                             .padding(.bottom, 8)
                             
-                            configSlider(title: settings.localized("max_tokens"), value: $vm.maxTokens, range: 1...4096, format: "%.0f")
+                            configSlider(title: settings.localized("context_window_size"), value: $vm.contextWindow, range: 1...modelMaxContextWindow, format: "%.0f", subtitle: "max \(Int(modelMaxContextWindow))")
+                            configSlider(title: settings.localized("max_tokens"), value: $vm.maxTokens, range: 1...maxTokensCap, format: "%.0f", subtitle: "<= context")
                             configSlider(title: settings.localized("top_k"), value: $vm.topK, range: 1...256, format: "%.0f")
                             configSlider(title: settings.localized("top_p"), value: $vm.topP, range: 0...1, format: "%.2f")
                             configSlider(title: settings.localized("temperature"), value: $vm.temperature, range: 0...2, format: "%.2f")
@@ -167,6 +168,18 @@ struct ChatSettingsSheet: View {
                     Button(settings.localized("done")) { dismiss() }
                 }
             }
+            .onAppear {
+                clampGenerationSettings()
+            }
+            .onChange(of: vm.selectedModelName) { _ in
+                clampGenerationSettings()
+            }
+            .onChange(of: vm.contextWindow) { _ in
+                clampGenerationSettings()
+            }
+            .onChange(of: vm.maxTokens) { _ in
+                clampGenerationSettings()
+            }
         }
     }
     
@@ -200,6 +213,8 @@ struct ChatSettingsSheet: View {
         }()
 
         return ModelData.models.filter { model in
+            if model.isDependencyOnly { return false }
+
             if RunAnywhere.isModelDownloaded(model.id, framework: model.inferenceFramework) {
                 return true
             }
@@ -218,6 +233,28 @@ struct ChatSettingsSheet: View {
     
     private var currentModel: AIModel? {
         ModelData.models.first(where: { $0.name == vm.selectedModelName })
+    }
+
+    private var modelMaxContextWindow: Double {
+        guard let currentModel else { return 2048 }
+        let advertised = currentModel.contextWindowSize > 0 ? currentModel.contextWindowSize : 2048
+        return Double(max(1, advertised))
+    }
+
+    private var maxTokensCap: Double {
+        min(max(1, vm.contextWindow), modelMaxContextWindow)
+    }
+
+    private func clampGenerationSettings() {
+        let clampedContext = min(max(1, vm.contextWindow), modelMaxContextWindow)
+        if clampedContext != vm.contextWindow {
+            vm.contextWindow = clampedContext
+        }
+
+        let clampedMaxTokens = min(max(1, vm.maxTokens), maxTokensCap)
+        if clampedMaxTokens != vm.maxTokens {
+            vm.maxTokens = clampedMaxTokens
+        }
     }
 }
 

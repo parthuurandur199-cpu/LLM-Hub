@@ -3,6 +3,9 @@ import PhotosUI
 import RunAnywhere
 import SwiftUI
 import UniformTypeIdentifiers
+#if canImport(ImageIO)
+import ImageIO
+#endif
 
 // MARK: - Chat ViewModel
 @MainActor
@@ -16,6 +19,7 @@ class ChatViewModel: ObservableObject {
     
     // Config Properties (Persisted)
     @AppStorage("chat_max_tokens") var maxTokens: Double = 512
+    @AppStorage("chat_context_window") var contextWindow: Double = 2048
     @AppStorage("chat_top_k") var topK: Double = 64
     @AppStorage("chat_top_p") var topP: Double = 0.95
     @AppStorage("chat_temperature") var temperature: Double = 1.0
@@ -87,9 +91,16 @@ class ChatViewModel: ObservableObject {
         syncBackendSettings()
 
         guard selectedModelName != AppSettings.shared.localized("no_model_selected") else { return }
-        if !force && llmBackend.currentlyLoadedModel == selectedModelName { return }
-        
         guard let model = ModelData.models.first(where: { $0.name == selectedModelName }) else { return }
+
+        let modelMaxContext = max(1, model.contextWindowSize > 0 ? model.contextWindowSize : 2048)
+        let desiredContextWindow = min(max(1, Int(contextWindow)), modelMaxContext)
+
+        if !force,
+           llmBackend.currentlyLoadedModel == selectedModelName,
+           llmBackend.loadedContextWindow == desiredContextWindow {
+            return
+        }
         
         isBackendLoading = true
         defer { isBackendLoading = false }
@@ -103,6 +114,7 @@ class ChatViewModel: ObservableObject {
 
     private func syncBackendSettings() {
         llmBackend.maxTokens = Int(maxTokens)
+        llmBackend.contextWindow = Int(contextWindow)
         llmBackend.topK = Int(topK)
         llmBackend.topP = Float(topP)
         llmBackend.temperature = Float(temperature)
@@ -128,14 +140,26 @@ class ChatViewModel: ObservableObject {
         guard !input.isEmpty || hasAttachment else { return false }
         guard !isGenerating else { return false }
 
-        let userText = input.isEmpty ? "[Attachment]" : input
-        let userMsg = ChatMessage(content: userText, isFromUser: true)
+        let generationPrompt: String = {
+            if !input.isEmpty { return input }
+            if effectiveImageURL != nil { return "Describe this image." }
+            if effectiveAudioURL != nil { return "Transcribe this audio." }
+            return ""
+        }()
+
+        let userMsg = ChatMessage(
+            content: input,
+            isFromUser: true,
+            attachmentImagePath: effectiveImageURL?.path,
+            attachmentAudioPath: effectiveAudioURL?.path
+        )
         messages.append(userMsg)
         inputText = ""
 
         // Auto-update title if it's "New Chat"
         if currentTitle == AppSettings.shared.localized("drawer_new_chat") {
-            currentTitle = String(userText.prefix(20))
+            let titleSeed = !input.isEmpty ? input : (effectiveImageURL != nil ? "Image" : "Audio")
+            currentTitle = String(titleSeed.prefix(20))
         }
 
         let aiMsg = ChatMessage(content: "", isFromUser: false, isGenerating: true)
@@ -155,7 +179,7 @@ class ChatViewModel: ObservableObject {
                     return
                 }
                 
-                try await llmBackend.generate(prompt: userText, imageURL: effectiveImageURL, audioURL: effectiveAudioURL) { [weak self] content, tokens, tps in
+                try await llmBackend.generate(prompt: generationPrompt, imageURL: effectiveImageURL, audioURL: effectiveAudioURL) { [weak self] content, tokens, tps in
                     Task { @MainActor [weak self] in
                         guard let self = self else { return }
                         self.updateLastAIMessageSync(content: content, tokens: tokens, tps: tps)
@@ -263,7 +287,17 @@ class ChatViewModel: ObservableObject {
         guard let assistantIndex = messages.firstIndex(where: { $0.id == assistantMessageId && !$0.isFromUser }) else { return }
         guard let userIndex = messages[..<assistantIndex].lastIndex(where: { $0.isFromUser }) else { return }
 
-        let prompt = messages[userIndex].content.trimmingCharacters(in: .whitespacesAndNewlines)
+        let userMessage = messages[userIndex]
+        let trimmedPrompt = userMessage.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        let imageURL = existingFileURL(atPath: userMessage.attachmentImagePath)
+        let audioURL = existingFileURL(atPath: userMessage.attachmentAudioPath)
+
+        let prompt: String = {
+            if !trimmedPrompt.isEmpty { return trimmedPrompt }
+            if imageURL != nil { return "Describe this image." }
+            if audioURL != nil { return "Transcribe this audio." }
+            return ""
+        }()
         guard !prompt.isEmpty else { return }
 
         var msgs = messages
@@ -292,7 +326,7 @@ class ChatViewModel: ObservableObject {
                     return
                 }
 
-                try await llmBackend.generate(prompt: prompt) { [weak self] content, tokens, tps in
+                try await llmBackend.generate(prompt: prompt, imageURL: imageURL, audioURL: audioURL) { [weak self] content, tokens, tps in
                     Task { @MainActor [weak self] in
                         guard let self = self else { return }
                         self.updateLastAIMessageSync(content: content, tokens: tokens, tps: tps)
@@ -337,6 +371,12 @@ class ChatViewModel: ObservableObject {
     }
 
     private var streamingTask: Task<Void, Never>?
+
+    private func existingFileURL(atPath path: String?) -> URL? {
+        guard let path,
+              FileManager.default.fileExists(atPath: path) else { return nil }
+        return URL(fileURLWithPath: path)
+    }
 }
 
 // MARK: - Message Bubble
@@ -387,18 +427,43 @@ struct MessageBubble: View {
                         }
                         .frame(maxWidth: 320)
                     } else {
-                        Text(message.content)
-                            .font(.body)
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 10)
-                            .background(
-                                RoundedRectangle(cornerRadius: 18)
-                                    .fill(LinearGradient(colors: [Color.indigo, Color.purple], startPoint: .topLeading, endPoint: .bottomTrailing))
-                            )
-                            .onLongPressGesture {
-                                showActions = true
+                        VStack(alignment: .trailing, spacing: 8) {
+                            if let imagePath = message.attachmentImagePath,
+                                         let uiImage = previewImage(from: imagePath) {
+                                Image(uiImage: uiImage)
+                                    .resizable()
+                                    .scaledToFit()
+                                    .frame(maxWidth: 220)
+                                    .clipShape(RoundedRectangle(cornerRadius: 14))
                             }
+
+                            if message.attachmentAudioPath != nil {
+                                Label(settings.localized("audio"), systemImage: "waveform")
+                                    .font(.caption)
+                                    .foregroundColor(.white)
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 8)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 14)
+                                            .fill(LinearGradient(colors: [Color.indigo.opacity(0.85), Color.purple.opacity(0.85)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                                    )
+                            }
+
+                            if !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                Text(message.content)
+                                    .font(.body)
+                                    .foregroundColor(.white)
+                                    .padding(.horizontal, 14)
+                                    .padding(.vertical, 10)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 18)
+                                            .fill(LinearGradient(colors: [Color.indigo, Color.purple], startPoint: .topLeading, endPoint: .bottomTrailing))
+                                    )
+                            }
+                        }
+                        .onLongPressGesture {
+                            showActions = true
+                        }
                     }
                 }
             } else {
@@ -445,7 +510,11 @@ struct MessageBubble: View {
                 }
             }
 
-            if !isEditing && !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if !isEditing && (
+                !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || message.attachmentImagePath != nil
+                || message.attachmentAudioPath != nil
+            ) {
                 HStack(spacing: 8) {
                     if message.isFromUser {
                         Spacer()
@@ -457,7 +526,9 @@ struct MessageBubble: View {
                     .buttonStyle(.plain)
                     .foregroundColor(.secondary)
 
-                    if message.isFromUser, let onEditUserMessage {
+                    if message.isFromUser,
+                       !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                       let onEditUserMessage {
                         Button {
                             editedText = message.content
                             isEditing = true
@@ -510,6 +581,28 @@ struct MessageBubble: View {
             }
             Button(settings.localized("cancel"), role: .cancel) {}
         }
+    }
+
+    private func previewImage(from path: String) -> UIImage? {
+        #if canImport(ImageIO)
+        let url = URL(fileURLWithPath: path)
+        let sourceOptions = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, sourceOptions) else {
+            return UIImage(contentsOfFile: path)
+        }
+
+        let thumbOptions = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: false,
+            kCGImageSourceThumbnailMaxPixelSize: 640,
+        ] as CFDictionary
+
+        if let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbOptions) {
+            return UIImage(cgImage: cgImage)
+        }
+        #endif
+        return UIImage(contentsOfFile: path)
     }
 }
 
@@ -1058,9 +1151,21 @@ struct ChatScreen: View {
             }
 
             Task {
-                if let data = try? await item.loadTransferable(type: Data.self) {
+                if let sourceURL = try? await item.loadTransferable(type: URL.self),
+                   let copiedURL = copyAttachmentToTemp(sourceURL, preferredExtension: sourceURL.pathExtension) {
                     await MainActor.run {
-                        attachedImageURL = writeAttachmentData(data, preferredExtension: "jpg")
+                        attachedImageURL = copiedURL
+                    }
+                    return
+                }
+
+                if let data = try? await item.loadTransferable(type: Data.self) {
+                    let preferredExt = item.supportedContentTypes
+                        .compactMap { $0.preferredFilenameExtension }
+                        .first ?? "bin"
+
+                    await MainActor.run {
+                        attachedImageURL = writeAttachmentData(data, preferredExtension: preferredExt)
                     }
                 }
             }
@@ -1088,6 +1193,9 @@ struct ChatScreen: View {
             if !canAttachAudio {
                 attachedAudioURL = nil
             }
+        }
+        .onDisappear {
+            vm.unloadModel()
         }
     }
 
@@ -1124,6 +1232,12 @@ struct ChatScreen: View {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let ext = preferredExtension.isEmpty ? sourceURL.pathExtension : preferredExtension
         let destinationURL = dir.appendingPathComponent(UUID().uuidString).appendingPathExtension(ext)
+        let didStartScopedAccess = sourceURL.startAccessingSecurityScopedResource()
+        defer {
+            if didStartScopedAccess {
+                sourceURL.stopAccessingSecurityScopedResource()
+            }
+        }
         do {
             if FileManager.default.fileExists(atPath: destinationURL.path) {
                 try FileManager.default.removeItem(at: destinationURL)
@@ -1186,6 +1300,8 @@ struct ChatScreen: View {
         }()
 
         return ModelData.models.filter { model in
+            if model.isDependencyOnly { return false }
+
             if RunAnywhere.isModelDownloaded(model.id, framework: model.inferenceFramework) {
                 return true
             }

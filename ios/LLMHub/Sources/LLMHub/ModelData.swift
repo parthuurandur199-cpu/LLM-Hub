@@ -130,6 +130,16 @@ public struct AIModel: Identifiable, Codable, Sendable {
     public var inferenceFramework: InferenceFramework {
         modelFormat == .onnx ? .onnx : .llamaCpp
     }
+
+    public var isDependencyOnly: Bool {
+        let lowerName = name.lowercased()
+        let lowerDescription = description.lowercased()
+        let lowerURL = url.lowercased()
+        return lowerName.contains("vision projector")
+            || lowerName.contains("mmproj")
+            || lowerDescription.contains("vision projector")
+            || lowerURL.contains("mmproj")
+    }
 }
 
 public struct ModelData {
