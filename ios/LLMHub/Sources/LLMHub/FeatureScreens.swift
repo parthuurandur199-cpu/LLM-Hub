@@ -64,6 +64,17 @@ private func dismissKeyboard() {
     #endif
 }
 
+private func sanitizeModelOutputText(_ text: String) -> String {
+    text
+        .replacingOccurrences(of: "â€™", with: "'")
+        .replacingOccurrences(of: "â€˜", with: "'")
+        .replacingOccurrences(of: "â€œ", with: "\"")
+        .replacingOccurrences(of: "â€", with: "\"")
+        .replacingOccurrences(of: "â€“", with: "-")
+        .replacingOccurrences(of: "â€”", with: "-")
+        .replacingOccurrences(of: "�", with: "'")
+}
+
 #if canImport(Network)
 @MainActor
 private final class FeatureLocalHTMLPreviewServer {
@@ -653,8 +664,10 @@ struct WritingAidScreen: View {
         isLoading = true
         defer { isLoading = false }
 
-        llm.maxTokens = Int(maxTokens)
-        llm.contextWindow = model.contextWindowSize > 0 ? model.contextWindowSize : 4096
+        let modelContextCap = model.contextWindowSize > 0 ? model.contextWindowSize : 4096
+        let effectiveContext = min(max(1, Int(maxTokens)), modelContextCap)
+        llm.maxTokens = min(Int(maxTokens), effectiveContext)
+        llm.contextWindow = effectiveContext
         llm.enableVision = false
         llm.enableAudio = false
         llm.enableThinking = enableThinking
@@ -688,7 +701,7 @@ struct WritingAidScreen: View {
             do {
                 try await llm.generate(prompt: writingPrompt()) { text, _, _ in
                     Task { @MainActor in
-                        outputText = text
+                        outputText = sanitizeModelOutputText(text)
                     }
                 }
             } catch {
@@ -1103,8 +1116,10 @@ struct ScamDetectorScreen: View {
         isLoading = true
         defer { isLoading = false }
 
-        llm.maxTokens = Int(maxTokens)
-        llm.contextWindow = model.contextWindowSize > 0 ? model.contextWindowSize : 4096
+        let modelContextCap = model.contextWindowSize > 0 ? model.contextWindowSize : 4096
+        let effectiveContext = min(max(1, Int(maxTokens)), modelContextCap)
+        llm.maxTokens = min(Int(maxTokens), effectiveContext)
+        llm.contextWindow = effectiveContext
         llm.enableVision = enableVision
         llm.enableAudio = false
         llm.enableThinking = enableThinking
@@ -1168,7 +1183,7 @@ struct ScamDetectorScreen: View {
                 let effectiveImageURL = enableVision ? selectedImageURL : nil
                 try await llm.generate(prompt: prompt, imageURL: effectiveImageURL) { text, _, _ in
                     Task { @MainActor in
-                        outputText = text
+                        outputText = sanitizeModelOutputText(text)
                     }
                 }
             } catch {
@@ -1387,6 +1402,7 @@ struct VibeCoderScreen: View {
     @State private var generationTask: Task<Void, Never>?
     @State private var streamTick: Int = 0
     @State private var lastStreamTickTime: Double = 0
+    @State private var debouncedAutosaveTask: Task<Void, Never>?
     @State private var workspaceFiles: [URL] = []
     @State private var pendingDeleteChatId: UUID?
     @State private var pendingDeleteFileURL: URL?
@@ -1884,7 +1900,14 @@ struct VibeCoderScreen: View {
         }
         .onChange(of: generatedCode) { _, _ in
             guard hasFileSession, !isGenerating else { return }
-            saveCurrentFile(silent: true)
+            debouncedAutosaveTask?.cancel()
+            debouncedAutosaveTask = Task {
+                try? await Task.sleep(nanoseconds: 450_000_000)
+                if Task.isCancelled { return }
+                await MainActor.run {
+                    saveCurrentFile(silent: true)
+                }
+            }
         }
         .fileImporter(isPresented: $showWorkspaceFolderPicker, allowedContentTypes: [.folder]) { result in
             switch result {
@@ -1929,6 +1952,8 @@ struct VibeCoderScreen: View {
         }
         .onDisappear {
             stopGeneration()
+            debouncedAutosaveTask?.cancel()
+            debouncedAutosaveTask = nil
             llm.unloadModel()
             #if canImport(Network)
             FeatureLocalHTMLPreviewServer.shared.stop()
@@ -2215,8 +2240,10 @@ struct VibeCoderScreen: View {
         isLoading = true
         defer { isLoading = false }
 
-        llm.maxTokens = Int(maxTokens)
-        llm.contextWindow = model.contextWindowSize > 0 ? model.contextWindowSize : 4096
+        let modelContextCap = model.contextWindowSize > 0 ? model.contextWindowSize : 4096
+        let effectiveContext = min(max(1, Int(maxTokens)), modelContextCap)
+        llm.maxTokens = min(Int(maxTokens), effectiveContext)
+        llm.contextWindow = effectiveContext
         llm.enableVision = false
         llm.enableAudio = false
         llm.enableThinking = enableThinking
@@ -2313,7 +2340,7 @@ struct VibeCoderScreen: View {
     private func updateMessageText(sessionId: UUID, messageId: UUID, text: String) {
         guard let sIdx = chatSessions.firstIndex(where: { $0.id == sessionId }) else { return }
         guard let mIdx = chatSessions[sIdx].messages.firstIndex(where: { $0.id == messageId }) else { return }
-        chatSessions[sIdx].messages[mIdx].text = text
+        chatSessions[sIdx].messages[mIdx].text = sanitizeModelOutputText(text)
     }
 
     private func messageText(sessionId: UUID, messageId: UUID) -> String? {

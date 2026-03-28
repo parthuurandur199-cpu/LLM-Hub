@@ -146,6 +146,7 @@ class ChatViewModel: ObservableObject {
     private let llmBackend = LLMBackend.shared
     private let userDefaults = UserDefaults.standard
     private var settingsByModelId: [String: ModelGenerationSettings] = [:]
+    private var contextResetStartBySessionId: [UUID: Int] = [:]
     private var isApplyingPersistedSettings = false
     @Published var currentSessionId: UUID = UUID()
     private var activeGeneratingMessageId: UUID?
@@ -169,6 +170,50 @@ class ChatViewModel: ObservableObject {
 
     var latestAssistantMessageId: UUID? {
         messages.last(where: { !$0.isFromUser && !$0.isGenerating && !$0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })?.id
+    }
+
+    var contextWindowCapForSession: Double {
+        let selectedModelCap = Double(max(1, ModelData.models.first(where: { $0.name == selectedModelName })?.contextWindowSize ?? 0))
+        let loadedCap = Double(max(1, llmBackend.loadedContextWindow ?? 0))
+        let configuredCap = Double(max(1, Int(contextWindow)))
+        return max(selectedModelCap, loadedCap, configuredCap, 1)
+    }
+
+    var contextBudgetForRing: Double {
+        let generationBudget = Double(max(1, Int(maxTokens)))
+        return min(contextWindowCapForSession, generationBudget)
+    }
+
+    var approximateContextTokensUsed: Double {
+        let startIndex = max(0, min(messages.count, contextResetStartBySessionId[currentSessionId] ?? 0))
+        let visibleMessages = Array(messages.dropFirst(startIndex))
+        let messageChars = visibleMessages.reduce(0) { $0 + $1.content.count }
+        let composerChars = inputText.count
+        let totalChars = messageChars + composerChars
+        return max(0, Double(totalChars) / 4.0)
+    }
+
+    var contextUsageFractionRaw: Double {
+        guard contextBudgetForRing > 0 else { return 0 }
+        return min(max(approximateContextTokensUsed / contextBudgetForRing, 0), 1)
+    }
+
+    var contextUsageFractionDisplay: Double {
+        if approximateContextTokensUsed <= 0 {
+            return 0
+        }
+        return min(max(contextUsageFractionRaw, 0.02), 1)
+    }
+
+    var contextUsageLabel: String {
+        if approximateContextTokensUsed > 0 {
+            return "\(max(1, Int((contextUsageFractionRaw * 100).rounded())))%"
+        }
+        return "0%"
+    }
+
+    var isContextBudgetExceededForSession: Bool {
+        contextUsageFractionRaw >= 0.995
     }
     
     var messages: [ChatMessage] {
@@ -406,6 +451,16 @@ class ChatViewModel: ObservableObject {
             return ""
         }()
 
+        let projectedChars = messages.reduce(0) { $0 + $1.content.count } + generationPrompt.count
+        let projectedTokens = Double(projectedChars) / 4.0
+        let projectedFraction = contextBudgetForRing > 0 ? (projectedTokens / contextBudgetForRing) : 0
+        let shouldResetInferenceContext = (isContextBudgetExceededForSession || projectedFraction >= 0.995) && !messages.isEmpty
+
+        if shouldResetInferenceContext {
+            // Keep existing transcript visible, but reset token accounting from this point forward.
+            contextResetStartBySessionId[currentSessionId] = messages.count
+        }
+
         let userMsg = ChatMessage(
             content: input,
             isFromUser: true,
@@ -427,7 +482,7 @@ class ChatViewModel: ObservableObject {
         isGenerating = true
 
         streamingTask = Task {
-            await loadModelIfNecessary()
+            await loadModelIfNecessary(force: shouldResetInferenceContext)
             
             do {
                 if !llmBackend.isLoaded {
@@ -474,7 +529,7 @@ class ChatViewModel: ObservableObject {
 
         if let idx = targetIndex, !messages[idx].isFromUser {
             var msgs = self.messages
-            msgs[idx].content = content
+            msgs[idx].content = normalizeStreamText(content)
             msgs[idx].isGenerating = isGenerating
             self.totalTokens = tokens
             self.tokensPerSecond = tps
@@ -482,6 +537,17 @@ class ChatViewModel: ObservableObject {
             msgs[idx].tokensPerSecond = tps > 0 ? tps : msgs[idx].tokensPerSecond
             self.messages = msgs
         }
+    }
+
+    private func normalizeStreamText(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: "â€™", with: "'")
+            .replacingOccurrences(of: "â€˜", with: "'")
+            .replacingOccurrences(of: "â€œ", with: "\"")
+            .replacingOccurrences(of: "â€", with: "\"")
+            .replacingOccurrences(of: "â€“", with: "-")
+            .replacingOccurrences(of: "â€”", with: "-")
+            .replacingOccurrences(of: "�", with: "'")
     }
 
     private func finishGeneratingMessage() {
@@ -526,11 +592,13 @@ class ChatViewModel: ObservableObject {
         let session = ChatSession(title: AppSettings.shared.localized("drawer_new_chat"))
         chatStore.addSession(session)
         currentSessionId = session.id
+        contextResetStartBySessionId[session.id] = 0
         objectWillChange.send()
     }
 
     func deleteSession(_ id: UUID) {
         chatStore.deleteSession(id: id)
+        contextResetStartBySessionId.removeValue(forKey: id)
         if currentSessionId == id {
             if let first = chatSessions.first {
                 currentSessionId = first.id
@@ -1192,34 +1260,50 @@ struct ChatScreen: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if !vm.messages.isEmpty {
-                HStack(spacing: 12) {
-                    Button {
-                        showSettings = true
-                    } label: {
-                        HStack(spacing: 4) {
-                            Text(vm.selectedModelName)
-                                .font(.caption.bold())
-                                .foregroundColor(.white)
-                            Image(systemName: "chevron.down")
-                                .font(.system(size: 8, weight: .bold))
-                                .foregroundColor(.white.opacity(0.78))
-                        }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
-                        .background(vm.isBackendLoading ? Color.orange.opacity(0.26) : Color.white.opacity(0.12))
-                        .clipShape(Capsule())
-                        .overlay(
-                            Capsule()
-                                .stroke(Color.white.opacity(0.18), lineWidth: 1)
-                        )
+            HStack(spacing: 12) {
+                Button {
+                    showSettings = true
+                } label: {
+                    HStack(spacing: 4) {
+                        Text(vm.selectedModelName)
+                            .font(.caption.bold())
+                            .foregroundColor(.white)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundColor(.white.opacity(0.78))
                     }
-                    Spacer()
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(vm.isBackendLoading ? Color.orange.opacity(0.26) : Color.white.opacity(0.12))
+                    .clipShape(Capsule())
+                    .overlay(
+                        Capsule()
+                            .stroke(Color.white.opacity(0.18), lineWidth: 1)
+                    )
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
-                .background(.ultraThinMaterial)
+
+                Spacer()
+
+                ZStack {
+                    Circle()
+                        .stroke(Color.white.opacity(0.18), lineWidth: 2)
+                    Circle()
+                        .trim(from: 0, to: vm.contextUsageFractionDisplay)
+                        .stroke(
+                            vm.contextUsageFractionRaw < 0.90 ? Color.cyan : Color.orange,
+                            style: StrokeStyle(lineWidth: 2.5, lineCap: .round)
+                        )
+                        .rotationEffect(.degrees(-90))
+
+                    Text(vm.contextUsageFractionRaw < 0.995 ? vm.contextUsageLabel : "!")
+                        .font(.system(size: 8, weight: .bold, design: .rounded))
+                }
+                .frame(width: 28, height: 28)
+                .accessibilityLabel("Context usage \(vm.contextUsageLabel)")
             }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            .background(.ultraThinMaterial)
 
             ScrollViewReader { proxy in
                 ScrollView {
@@ -1284,9 +1368,7 @@ struct ChatScreen: View {
                 }
                 .onChange(of: vm.messages.last?.content ?? "") { _, _ in
                     if vm.isGenerating, let last = vm.messages.last {
-                        withAnimation(.easeOut(duration: 0.12)) {
-                            proxy.scrollTo(last.id, anchor: .bottom)
-                        }
+                        proxy.scrollTo(last.id, anchor: .bottom)
                     }
                 }
                 .onChange(of: isComposerFocused) { _, focused in
