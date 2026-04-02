@@ -1,5 +1,7 @@
 import Foundation
 import SwiftUI
+import AVFoundation
+import NaturalLanguage
 
 private final class LocalizationBundleProbe {}
 
@@ -105,6 +107,9 @@ final class AppSettings: ObservableObject {
     @Published var showResultStatus: Bool {
         didSet { UserDefaults.standard.set(showResultStatus, forKey: "show_result_status") }
     }
+    @Published var autoReadoutEnabled: Bool {
+        didSet { UserDefaults.standard.set(autoReadoutEnabled, forKey: "auto_readout_enabled") }
+    }
 
     private init() {
         let langRaw = UserDefaults.standard.string(forKey: "app_language") ?? "system"
@@ -113,6 +118,7 @@ final class AppSettings: ObservableObject {
         theme = AppTheme(rawValue: themeRaw) ?? .system
         streamingEnabled = UserDefaults.standard.bool(forKey: "streaming_enabled")
         showResultStatus = UserDefaults.standard.object(forKey: "show_result_status") as? Bool ?? true
+        autoReadoutEnabled = UserDefaults.standard.bool(forKey: "auto_readout_enabled")
     }
 
     private var activeLocalizationCode: String {
@@ -154,5 +160,190 @@ final class AppSettings: ObservableObject {
         
         // 4. Ultimate fallback
         return NSLocalizedString(key, comment: "")
+    }
+}
+
+@MainActor
+final class OnDeviceTtsManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
+    static let shared = OnDeviceTtsManager()
+
+    @Published private(set) var isSpeaking = false
+    @Published private(set) var currentKey: String?
+
+    private let synthesizer = AVSpeechSynthesizer()
+
+    private override init() {
+        super.init()
+        synthesizer.delegate = self
+    }
+
+    func speak(_ text: String, fallbackLanguage: AppLanguage, key: String? = nil) {
+        let cleaned = sanitize(text)
+        guard !cleaned.isEmpty else { return }
+
+        stop()
+
+        let utterance = AVSpeechUtterance(string: cleaned)
+        utterance.voice = bestVoice(for: cleaned, fallbackLanguage: fallbackLanguage)
+        utterance.rate = AVSpeechUtteranceDefaultSpeechRate
+        utterance.prefersAssistiveTechnologySettings = true
+
+        currentKey = key
+        isSpeaking = true
+        synthesizer.speak(utterance)
+    }
+
+    func toggleSpeaking(_ text: String, fallbackLanguage: AppLanguage, key: String) {
+        if isSpeaking(key: key) {
+            stop()
+        } else {
+            speak(text, fallbackLanguage: fallbackLanguage, key: key)
+        }
+    }
+
+    func isSpeaking(key: String) -> Bool {
+        isSpeaking && currentKey == key
+    }
+
+    func stopIfMatching(key: String) {
+        guard isSpeaking(key: key) else { return }
+        stop()
+    }
+
+    func stop() {
+        if synthesizer.isSpeaking || synthesizer.isPaused {
+            synthesizer.stopSpeaking(at: .immediate)
+        }
+        isSpeaking = false
+        currentKey = nil
+    }
+
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        Task { @MainActor in
+            self.isSpeaking = false
+            self.currentKey = nil
+        }
+    }
+
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+        Task { @MainActor in
+            self.isSpeaking = false
+            self.currentKey = nil
+        }
+    }
+
+    private func bestVoice(for text: String, fallbackLanguage: AppLanguage) -> AVSpeechSynthesisVoice? {
+        let preferredCodes = detectedLocaleIdentifiers(for: text) + localeIdentifiers(for: fallbackLanguage)
+        for code in preferredCodes {
+            if let voice = AVSpeechSynthesisVoice(language: code) {
+                return voice
+            }
+        }
+        return AVSpeechSynthesisVoice(language: Locale.current.identifier)
+            ?? AVSpeechSynthesisVoice(language: "en-US")
+    }
+
+    private func localeIdentifiers(for language: AppLanguage) -> [String] {
+        switch language {
+        case .systemDefault:
+            let current = Locale.current.identifier
+            let short = Locale.current.language.languageCode?.identifier ?? "en"
+            return [current, short, "en-US"]
+        case .english:
+            return ["en-US", "en-GB", "en"]
+        case .arabic:
+            return ["ar-SA", "ar-AE", "ar"]
+        case .german:
+            return ["de-DE", "de"]
+        case .spanish:
+            return ["es-ES", "es-MX", "es"]
+        case .persian:
+            return ["fa-IR", "fa"]
+        case .french:
+            return ["fr-FR", "fr-CA", "fr"]
+        case .hebrew:
+            return ["he-IL", "he"]
+        case .indonesian:
+            return ["id-ID", "id"]
+        case .italian:
+            return ["it-IT", "it"]
+        case .japanese:
+            return ["ja-JP", "ja"]
+        case .korean:
+            return ["ko-KR", "ko"]
+        case .polish:
+            return ["pl-PL", "pl"]
+        case .portuguese:
+            return ["pt-BR", "pt-PT", "pt"]
+        case .russian:
+            return ["ru-RU", "ru"]
+        case .turkish:
+            return ["tr-TR", "tr"]
+        case .ukrainian:
+            return ["uk-UA", "uk"]
+        case .chinese:
+            return ["zh-CN", "zh-TW", "zh-HK", "zh"]
+        }
+    }
+
+    private func detectedLocaleIdentifiers(for text: String) -> [String] {
+        let recognizer = NLLanguageRecognizer()
+        recognizer.processString(text)
+
+        guard let dominantLanguage = recognizer.dominantLanguage else { return [] }
+
+        switch dominantLanguage {
+        case .english:
+            return ["en-US", "en-GB", "en"]
+        case .arabic:
+            return ["ar-SA", "ar-AE", "ar"]
+        case .german:
+            return ["de-DE", "de"]
+        case .spanish:
+            return ["es-ES", "es-MX", "es"]
+        case .persian:
+            return ["fa-IR", "fa"]
+        case .french:
+            return ["fr-FR", "fr-CA", "fr"]
+        case .hebrew:
+            return ["he-IL", "he"]
+        case .indonesian:
+            return ["id-ID", "id"]
+        case .italian:
+            return ["it-IT", "it"]
+        case .japanese:
+            return ["ja-JP", "ja"]
+        case .korean:
+            return ["ko-KR", "ko"]
+        case .polish:
+            return ["pl-PL", "pl"]
+        case .portuguese:
+            return ["pt-BR", "pt-PT", "pt"]
+        case .russian:
+            return ["ru-RU", "ru"]
+        case .turkish:
+            return ["tr-TR", "tr"]
+        case .ukrainian:
+            return ["uk-UA", "uk"]
+        case .simplifiedChinese:
+            return ["zh-CN", "zh"]
+        case .traditionalChinese:
+            return ["zh-TW", "zh-HK", "zh"]
+        default:
+            let raw = dominantLanguage.rawValue
+            return raw.isEmpty ? [] : [raw]
+        }
+    }
+
+    private func sanitize(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: "`", with: "")
+            .replacingOccurrences(of: "*", with: "")
+            .replacingOccurrences(of: "#", with: "")
+            .replacingOccurrences(of: ">", with: "")
+            .replacingOccurrences(of: "_", with: " ")
+            .replacingOccurrences(of: "\\[(.*?)\\]\\((.*?)\\)", with: "$1", options: .regularExpression)
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

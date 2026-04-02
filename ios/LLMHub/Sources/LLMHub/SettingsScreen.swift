@@ -32,6 +32,16 @@ struct SettingsScreen: View {
 
                 // MARK: Appearance Section
                 Section {
+                    SettingsToggleRow(
+                        icon: "speaker.wave.2.fill",
+                        iconColor: .orange,
+                        title: settings.localized("auto_readout"),
+                        subtitle: settings.localized("auto_readout_description"),
+                        isOn: $settings.autoReadoutEnabled
+                    )
+                    .listRowInsets(EdgeInsets(top: 6, leading: 14, bottom: 6, trailing: 14))
+                    .listRowBackground(Color.clear)
+
                     SettingsRow(
                         icon: "globe",
                         iconColor: .blue,
@@ -256,10 +266,10 @@ struct SettingsToggleRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(.subheadline)
-                    .foregroundColor(.primary)
+                    .foregroundColor(.white)
                 Text(subtitle)
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(.white.opacity(0.65))
                     .lineLimit(2)
             }
 
@@ -267,6 +277,15 @@ struct SettingsToggleRow: View {
 
             Toggle("", isOn: $isOn)
                 .labelsHidden()
+                .tint(.white.opacity(0.9))
         }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 12)
+        .background(.ultraThinMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .overlay(
+            RoundedRectangle(cornerRadius: 16)
+                .stroke(Color.white.opacity(0.16), lineWidth: 1)
+        )
     }
 }

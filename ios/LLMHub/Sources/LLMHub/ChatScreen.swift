@@ -192,6 +192,7 @@ class ChatViewModel: ObservableObject {
     private let chatStore = ChatStore.shared
     private let llmBackend = LLMBackend.shared
     private let userDefaults = UserDefaults.standard
+    private let ttsManager = OnDeviceTtsManager.shared
     private var settingsByModelId: [String: ModelGenerationSettings] = [:]
     private var contextResetStartBySessionId: [UUID: Int] = [:]
     private var isApplyingPersistedSettings = false
@@ -615,6 +616,18 @@ class ChatViewModel: ObservableObject {
                 msgs[idx].tokensPerSecond = tokensPerSecond
             }
             self.messages = msgs
+
+            if AppSettings.shared.autoReadoutEnabled {
+                let finishedMessage = msgs[idx]
+                let content = finishedMessage.content.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !content.isEmpty {
+                    ttsManager.speak(
+                        content,
+                        fallbackLanguage: AppSettings.shared.selectedLanguage,
+                        key: finishedMessage.id.uuidString
+                    )
+                }
+            }
         }
         activeGeneratingMessageId = nil
     }
@@ -622,6 +635,7 @@ class ChatViewModel: ObservableObject {
     func stopGeneration() {
         streamingTask?.cancel()
         streamingTask = nil
+        ttsManager.stop()
         if let activeId = activeGeneratingMessageId,
            let idx = messages.firstIndex(where: { $0.id == activeId }),
            !messages[idx].isFromUser {
@@ -762,6 +776,8 @@ struct MessageBubble: View {
     let onEditUserMessage: ((String) -> Void)?
     let onEditAssistantMessage: ((String) -> Void)?
     let onRegenerateResponse: (() -> Void)?
+    let onToggleTts: (() -> Void)?
+    let isTtsSpeaking: Bool
     @State private var showActions = false
     @State private var isEditing = false
     @State private var editedText = ""
@@ -917,9 +933,17 @@ struct MessageBubble: View {
                     .buttonStyle(.plain)
                     .foregroundColor(.white.opacity(0.68))
 
+                    if !message.isFromUser, let onToggleTts {
+                        Button(action: onToggleTts) {
+                            Image(systemName: isTtsSpeaking ? "stop.fill" : "speaker.wave.2")
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundColor(.white.opacity(0.68))
+                    }
+
                     if message.isFromUser,
                        !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                       let onEditUserMessage {
+                       onEditUserMessage != nil {
                         Button {
                             editedText = message.content
                             isEditing = true
@@ -930,7 +954,7 @@ struct MessageBubble: View {
                         .foregroundColor(.white.opacity(0.68))
                     }
 
-                    if !message.isFromUser, let onEditAssistantMessage {
+                    if !message.isFromUser, onEditAssistantMessage != nil {
                         Button {
                             editedText = message.content
                             isEditing = true
@@ -1293,6 +1317,7 @@ struct ChatDrawerPanel: View {
 struct ChatScreen: View {
     @EnvironmentObject var settings: AppSettings
     @StateObject private var vm = ChatViewModel()
+    @ObservedObject private var ttsManager = OnDeviceTtsManager.shared
     var onNavigateToSettings: () -> Void
     var onNavigateToModels: () -> Void
     var onNavigateBack: () -> Void
@@ -1390,7 +1415,15 @@ struct ChatScreen: View {
                                             vm.editAssistantMessage(msg.id, newText: updatedResponse)
                                         }
                                     },
-                                    onRegenerateResponse: regenerateAction
+                                    onRegenerateResponse: regenerateAction,
+                                    onToggleTts: !msg.isFromUser && !msg.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? {
+                                        ttsManager.toggleSpeaking(
+                                            msg.content,
+                                            fallbackLanguage: settings.selectedLanguage,
+                                            key: msg.id.uuidString
+                                        )
+                                    } : nil,
+                                    isTtsSpeaking: ttsManager.isSpeaking(key: msg.id.uuidString)
                                 )
                                 .id(msg.id)
                                 .padding(.horizontal, 16)

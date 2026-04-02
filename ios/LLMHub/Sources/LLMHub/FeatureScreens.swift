@@ -210,6 +210,19 @@ private extension View {
                     .allowsHitTesting(false)
             )
     }
+
+    func featureActionIconButtonStyle(cornerRadius: CGFloat = 10) -> some View {
+        self
+            .foregroundStyle(.white)
+            .background(
+                RoundedRectangle(cornerRadius: cornerRadius)
+                    .fill(Color.white.opacity(0.08))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius)
+                    .stroke(Color.white.opacity(0.16), lineWidth: 1)
+            )
+    }
 }
 
 private struct FeatureModelSettingsSheet: View {
@@ -771,6 +784,7 @@ private final class IOSSpeechTranscriber: NSObject, ObservableObject {
 private struct IOS26TranscriberScreen: View {
     @EnvironmentObject var settings: AppSettings
     @StateObject private var transcriber = IOSSpeechTranscriber()
+    @ObservedObject private var ttsManager = OnDeviceTtsManager.shared
     @State private var showAudioImporter = false
 
     let onNavigateBack: () -> Void
@@ -978,6 +992,7 @@ private struct IOS26TranscriberScreen: View {
 
     @ViewBuilder
     private func transcriptionBoxView(for text: String) -> some View {
+        let speechKey = "transcriber-\(text)"
         VStack(alignment: .leading, spacing: 8) {
             Text(text.isEmpty ? (transcriber.isRecording ? "..." : "-") : text)
                 .textSelection(.enabled)
@@ -995,6 +1010,19 @@ private struct IOS26TranscriberScreen: View {
                 HStack {
                     Spacer()
                     Button {
+                        ttsManager.toggleSpeaking(
+                            text,
+                            fallbackLanguage: settings.selectedLanguage,
+                            key: speechKey
+                        )
+                    } label: {
+                        Image(systemName: ttsManager.isSpeaking(key: speechKey) ? "stop.fill" : "speaker.wave.2")
+                            .font(.system(size: 16, weight: .semibold))
+                            .frame(width: 40, height: 40)
+                    }
+                    .featureActionIconButtonStyle()
+
+                    Button {
                         #if canImport(UIKit)
                         UIPasteboard.general.string = text
                         #endif
@@ -1003,15 +1031,7 @@ private struct IOS26TranscriberScreen: View {
                             .font(.system(size: 16, weight: .semibold))
                             .frame(width: 40, height: 40)
                     }
-                    .foregroundStyle(.white)
-                    .background(
-                        RoundedRectangle(cornerRadius: 10)
-                            .fill(Color.white.opacity(0.08))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 10)
-                            .stroke(Color.white.opacity(0.16), lineWidth: 1)
-                    )
+                    .featureActionIconButtonStyle()
                 }
             }
         }
@@ -1083,6 +1103,7 @@ struct TranscriberScreen: View {
 
 struct WritingAidScreen: View {
     @EnvironmentObject var settings: AppSettings
+    @ObservedObject private var ttsManager = OnDeviceTtsManager.shared
     @AppStorage("feature_writing_model_name") private var selectedModelName: String = ""
     @AppStorage("feature_writing_max_tokens") private var maxTokens: Double = 1024
     @AppStorage("feature_writing_enable_thinking") private var enableThinking: Bool = true
@@ -1164,15 +1185,21 @@ struct WritingAidScreen: View {
                                     .font(.system(size: 18, weight: .semibold))
                                     .frame(width: 44, height: 44)
                             }
-                            .foregroundStyle(.white)
-                            .background(
-                                RoundedRectangle(cornerRadius: 10)
-                                    .fill(Color.white.opacity(0.08))
-                            )
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 10)
-                                    .stroke(Color.white.opacity(0.16), lineWidth: 1)
-                            )
+                            .featureActionIconButtonStyle()
+
+                            Button {
+                                ttsManager.toggleSpeaking(
+                                    outputText,
+                                    fallbackLanguage: settings.selectedLanguage,
+                                    key: "writing-aid-output"
+                                )
+                            } label: {
+                                Image(systemName: ttsManager.isSpeaking(key: "writing-aid-output") ? "stop.fill" : "speaker.wave.2")
+                                    .font(.system(size: 18, weight: .semibold))
+                                    .frame(width: 44, height: 44)
+                            }
+                            .featureActionIconButtonStyle()
+                            .disabled(outputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
                             Button {
                                 #if canImport(UIKit)
@@ -1183,15 +1210,7 @@ struct WritingAidScreen: View {
                                     .font(.system(size: 18, weight: .semibold))
                                     .frame(width: 44, height: 44)
                             }
-                            .foregroundStyle(.white)
-                            .background(
-                                RoundedRectangle(cornerRadius: 10)
-                                    .fill(Color.white.opacity(0.08))
-                            )
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 10)
-                                    .stroke(Color.white.opacity(0.16), lineWidth: 1)
-                            )
+                            .featureActionIconButtonStyle()
                             .disabled(outputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
                             Spacer()
@@ -1408,6 +1427,7 @@ struct WritingAidScreen: View {
 
 struct ScamDetectorScreen: View {
     @EnvironmentObject var settings: AppSettings
+    @ObservedObject private var ttsManager = OnDeviceTtsManager.shared
     @AppStorage("feature_scam_model_name") private var selectedModelName: String = ""
     @AppStorage("feature_scam_max_tokens") private var maxTokens: Double = 1024
     @AppStorage("feature_scam_enable_thinking") private var enableThinking: Bool = true
@@ -1485,15 +1505,7 @@ struct ScamDetectorScreen: View {
                                     .font(.system(size: 18, weight: .semibold))
                                     .frame(width: 44, height: 44)
                             }
-                            .foregroundStyle(.white)
-                            .background(
-                                RoundedRectangle(cornerRadius: 10)
-                                    .fill(Color.white.opacity(0.08))
-                            )
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 10)
-                                    .stroke(Color.white.opacity(0.16), lineWidth: 1)
-                            )
+                            .featureActionIconButtonStyle()
 
                             if enableVision {
                                 PhotosPicker(selection: $selectedImageItem, matching: .images) {
@@ -1513,6 +1525,20 @@ struct ScamDetectorScreen: View {
                             }
 
                             Button {
+                                ttsManager.toggleSpeaking(
+                                    outputText,
+                                    fallbackLanguage: settings.selectedLanguage,
+                                    key: "scam-detector-output"
+                                )
+                            } label: {
+                                Image(systemName: ttsManager.isSpeaking(key: "scam-detector-output") ? "stop.fill" : "speaker.wave.2")
+                                    .font(.system(size: 18, weight: .semibold))
+                                    .frame(width: 44, height: 44)
+                            }
+                            .featureActionIconButtonStyle()
+                            .disabled(outputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                            Button {
                                 #if canImport(UIKit)
                                 UIPasteboard.general.string = outputText
                                 #endif
@@ -1521,15 +1547,7 @@ struct ScamDetectorScreen: View {
                                     .font(.system(size: 18, weight: .semibold))
                                     .frame(width: 44, height: 44)
                             }
-                            .foregroundStyle(.white)
-                            .background(
-                                RoundedRectangle(cornerRadius: 10)
-                                    .fill(Color.white.opacity(0.08))
-                            )
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 10)
-                                    .stroke(Color.white.opacity(0.16), lineWidth: 1)
-                            )
+                            .featureActionIconButtonStyle()
                             .disabled(outputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
                             Spacer()
@@ -2071,6 +2089,7 @@ private struct WorkspaceFilesSheet: View {
 
 struct VibeCoderScreen: View {
     @EnvironmentObject var settings: AppSettings
+    @ObservedObject private var ttsManager = OnDeviceTtsManager.shared
     @AppStorage("feature_vibecoder_model_name") private var selectedModelName: String = ""
     @AppStorage("feature_vibecoder_max_tokens") private var maxTokens: Double = 2048
     @AppStorage("feature_vibecoder_enable_thinking") private var enableThinking: Bool = true
@@ -2313,9 +2332,26 @@ struct VibeCoderScreen: View {
                                             VStack(alignment: .leading, spacing: 8) {
                                                 ForEach(activeMessages) { message in
                                                     VStack(alignment: .leading, spacing: 4) {
-                                                        Text(message.role == "user" ? settings.localized("vibe_coder_message_you") : settings.localized("vibe_coder_message_ai"))
-                                                            .font(.caption.weight(.semibold))
-                                                            .foregroundStyle(.white.opacity(0.65))
+                                                        HStack(spacing: 8) {
+                                                            Text(message.role == "user" ? settings.localized("vibe_coder_message_you") : settings.localized("vibe_coder_message_ai"))
+                                                                .font(.caption.weight(.semibold))
+                                                                .foregroundStyle(.white.opacity(0.65))
+                                                            Spacer()
+                                                            if message.role != "user" && !message.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                                                Button {
+                                                                    ttsManager.toggleSpeaking(
+                                                                        message.text,
+                                                                        fallbackLanguage: settings.selectedLanguage,
+                                                                        key: "vibe-chat-\(message.id.uuidString)"
+                                                                    )
+                                                                } label: {
+                                                                    Image(systemName: ttsManager.isSpeaking(key: "vibe-chat-\(message.id.uuidString)") ? "stop.fill" : "speaker.wave.2")
+                                                                        .font(.system(size: 13, weight: .semibold))
+                                                                }
+                                                                .buttonStyle(.plain)
+                                                                .foregroundStyle(.white.opacity(0.68))
+                                                            }
+                                                        }
                                                         Text(message.text)
                                                             .textSelection(.enabled)
                                                             .frame(maxWidth: .infinity, alignment: .leading)
