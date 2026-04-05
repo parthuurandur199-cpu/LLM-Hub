@@ -48,6 +48,9 @@ class AudioInputService(private val context: Context) {
     
     // Callback for when recording stops automatically
     var onRecordingAutoStopped: (() -> Unit)? = null
+
+    // When false, silence detection will NOT auto-stop recording (timer expiry still stops it)
+    var silenceAutoStopEnabled: Boolean = true
     
     companion object {
         private const val TAG = "AudioInputService"
@@ -288,7 +291,7 @@ class AudioInputService(private val context: Context) {
                         } else {
                             val speechAgeMs = now - firstSpeechAtMs
                             val silenceMs = now - lastSpeechAtMs
-                            if (speechAgeMs >= MIN_ACTIVE_SPEECH_MS && silenceMs >= SILENCE_STOP_DURATION_MS) {
+                            if (silenceAutoStopEnabled && speechAgeMs >= MIN_ACTIVE_SPEECH_MS && silenceMs >= SILENCE_STOP_DURATION_MS) {
                                 Log.d(TAG, "Detected end of speech (silence ${silenceMs}ms), auto-stopping recording")
                                 isRecording = false
                                 serviceScope.launch {

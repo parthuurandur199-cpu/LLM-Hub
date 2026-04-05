@@ -1482,8 +1482,9 @@ fun TranscriberScreen(
 
     LaunchedEffect(Unit) { 
         hasAudioPermission = audioService.hasAudioPermission()
+        audioService.silenceAutoStopEnabled = false
         
-        // Set up callback for auto-stop
+        // Set up callback for auto-stop (only fires when timer expires)
         audioService.onRecordingAutoStopped = {
             viewModel.setRecording(false)
         }

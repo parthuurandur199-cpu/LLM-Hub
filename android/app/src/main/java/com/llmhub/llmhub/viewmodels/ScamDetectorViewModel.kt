@@ -12,6 +12,7 @@ import com.llmhub.llmhub.data.ModelAvailabilityProvider
 import com.llmhub.llmhub.data.hasDownloadedVisionProjector
 import com.llmhub.llmhub.data.requiresExternalVisionProjector
 import com.llmhub.llmhub.inference.MediaPipeInferenceService
+import com.llmhub.llmhub.inference.UnifiedInferenceService
 import com.google.mediapipe.tasks.genai.llminference.LlmInference
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -250,12 +251,13 @@ class ScamDetectorViewModel(application: Application) : AndroidViewModel(applica
             try {
                 // Unload any existing model first
                 inferenceService.unloadModel()
+                (inferenceService as? UnifiedInferenceService)?.setAgentToolsEnabled(false)
                 val effectiveCtx = _selectedMaxTokens.value.coerceIn(1, model.contextWindowSize.coerceAtLeast(1))
                 inferenceService.setGenerationParameters(
                     maxTokens = effectiveCtx,
                     topK = null, topP = null, temperature = null,
                     nGpuLayers = _selectedNGpuLayers.value,
-                    enableThinking = _enableThinking.value,
+                    enableThinking = if (model.name.contains("Gemma-4", ignoreCase = true)) false else _enableThinking.value,
                     contextWindow = effectiveCtx
                 )
 

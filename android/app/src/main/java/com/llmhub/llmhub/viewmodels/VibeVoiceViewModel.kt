@@ -8,6 +8,7 @@ import com.google.mediapipe.tasks.genai.llminference.LlmInference
 import com.llmhub.llmhub.data.LLMModel
 import com.llmhub.llmhub.data.ModelAvailabilityProvider
 import com.llmhub.llmhub.inference.InferenceService
+import com.llmhub.llmhub.inference.UnifiedInferenceService
 import com.llmhub.llmhub.utils.AudioConversionUtils
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
@@ -171,6 +172,8 @@ class VibeVoiceViewModel(application: Application) : AndroidViewModel(applicatio
             _isLoadingModel.value = true
             _loadError.value = null
             try {
+                (inferenceService as? UnifiedInferenceService)?.setAgentToolsEnabled(false)
+                inferenceService.setGenerationParameters(null, null, null, null, enableThinking = if (model.name.contains("Gemma-4", ignoreCase = true)) false else null)
                 inferenceService.loadModel(
                     model = model,
                     preferredBackend = _selectedBackend.value,

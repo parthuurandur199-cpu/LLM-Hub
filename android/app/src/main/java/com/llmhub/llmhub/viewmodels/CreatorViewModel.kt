@@ -6,6 +6,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.llmhub.llmhub.data.CreatorEntity
 import com.llmhub.llmhub.inference.InferenceService
+import com.llmhub.llmhub.inference.UnifiedInferenceService
 import com.llmhub.llmhub.repository.ChatRepository
 import com.llmhub.llmhub.data.LLMModel
 import com.llmhub.llmhub.data.ModelAvailabilityProvider
@@ -145,7 +146,7 @@ class CreatorViewModel(
             topP = null,
             temperature = null,
             nGpuLayers = _selectedNGpuLayers.value,
-            enableThinking = _enableThinking.value,
+            enableThinking = if (model?.name?.contains("Gemma-4", ignoreCase = true) == true) false else _enableThinking.value,
             contextWindow = effectiveMaxTokens
         )
     }
@@ -237,6 +238,7 @@ class CreatorViewModel(
                 // Unload current if any
                 inferenceService.unloadModel()
                 applyGenerationParametersToService()
+                (inferenceService as? UnifiedInferenceService)?.setAgentToolsEnabled(false)
 
                 val success = inferenceService.loadModel(
                     model = model,

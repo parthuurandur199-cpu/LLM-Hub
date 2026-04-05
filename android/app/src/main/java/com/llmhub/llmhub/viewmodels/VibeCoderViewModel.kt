@@ -7,6 +7,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.llmhub.llmhub.data.LLMModel
 import com.llmhub.llmhub.data.ModelAvailabilityProvider
+import com.llmhub.llmhub.inference.UnifiedInferenceService
 import com.google.mediapipe.tasks.genai.llminference.LlmInference
 import org.json.JSONArray
 import org.json.JSONObject
@@ -815,7 +816,7 @@ class VibeCoderViewModel(application: Application) : AndroidViewModel(applicatio
             topP = topP,
             temperature = temperature,
             nGpuLayers = _selectedNGpuLayers.value,
-            enableThinking = _enableThinking.value,
+            enableThinking = if (model?.name?.contains("Gemma-4", ignoreCase = true) == true) false else _enableThinking.value,
             contextWindow = effectiveMaxTokens
         )
     }
@@ -835,6 +836,7 @@ class VibeCoderViewModel(application: Application) : AndroidViewModel(applicatio
             try {
                 inferenceService.unloadModel()
                 applyGenerationParametersToService()
+                (inferenceService as? UnifiedInferenceService)?.setAgentToolsEnabled(false)
 
                 // Load model with text-only mode (vibe coder generates code as text)
                 val success = inferenceService.loadModel(

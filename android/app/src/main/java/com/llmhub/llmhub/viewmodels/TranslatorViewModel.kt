@@ -11,6 +11,7 @@ import com.llmhub.llmhub.data.ModelAvailabilityProvider
 import com.llmhub.llmhub.screens.Language
 import com.llmhub.llmhub.screens.languageCodeToEnglishName
 import com.llmhub.llmhub.inference.InferenceService
+import com.llmhub.llmhub.inference.UnifiedInferenceService
 import com.llmhub.llmhub.utils.AudioConversionUtils
 import com.google.mediapipe.tasks.genai.llminference.LlmInference
 import java.util.UUID
@@ -303,8 +304,8 @@ class TranslatorViewModel(application: Application) : AndroidViewModel(applicati
                 // Load model with appropriate modality settings
                 val disableVision = !_visionEnabled.value
                 val disableAudio = !_audioEnabled.value
-                inferenceService.setGenerationParameters(null, null, null, null, enableThinking = _enableThinking.value)
-                
+                inferenceService.setGenerationParameters(null, null, null, null, enableThinking = if (model.name.contains("Gemma-4", ignoreCase = true)) false else _enableThinking.value)
+                (inferenceService as? UnifiedInferenceService)?.setAgentToolsEnabled(false)
                 inferenceService.loadModel(
                     model = model,
                     preferredBackend = _selectedBackend.value,

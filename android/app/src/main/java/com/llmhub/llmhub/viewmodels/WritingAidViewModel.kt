@@ -8,6 +8,7 @@ import androidx.lifecycle.viewModelScope
 import com.llmhub.llmhub.data.LLMModel
 import com.llmhub.llmhub.data.ModelAvailabilityProvider
 import com.llmhub.llmhub.inference.MediaPipeInferenceService
+import com.llmhub.llmhub.inference.UnifiedInferenceService
 import com.google.mediapipe.tasks.genai.llminference.LlmInference
 import java.util.UUID
 import kotlinx.coroutines.Dispatchers
@@ -199,7 +200,7 @@ class WritingAidViewModel(application: Application) : AndroidViewModel(applicati
             topP = null,
             temperature = null,
             nGpuLayers = _selectedNGpuLayers.value,
-            enableThinking = _enableThinking.value,
+            enableThinking = if (model.name.contains("Gemma-4", ignoreCase = true)) false else _enableThinking.value,
             contextWindow = effectiveCtx
         )
     }
@@ -221,6 +222,7 @@ class WritingAidViewModel(application: Application) : AndroidViewModel(applicati
                 // Unload any existing model first
                 inferenceService.unloadModel()
                 applyGenerationParametersToService()
+                (inferenceService as? UnifiedInferenceService)?.setAgentToolsEnabled(false)
 
                 // Load the selected model with text-only mode (disable vision and audio)
                 val success = inferenceService.loadModel(

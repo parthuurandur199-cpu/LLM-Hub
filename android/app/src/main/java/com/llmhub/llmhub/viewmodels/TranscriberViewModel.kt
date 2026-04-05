@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import com.llmhub.llmhub.data.LLMModel
 import com.llmhub.llmhub.data.ModelAvailabilityProvider
 import com.llmhub.llmhub.inference.InferenceService
+import com.llmhub.llmhub.inference.UnifiedInferenceService
 import com.llmhub.llmhub.utils.AudioConversionUtils
 import com.google.mediapipe.tasks.genai.llminference.LlmInference
 import java.util.UUID
@@ -154,6 +155,8 @@ class TranscriberViewModel(application: Application) : AndroidViewModel(applicat
             
             try {
                 // Load model with audio modality enabled
+                (inferenceService as? UnifiedInferenceService)?.setAgentToolsEnabled(false)
+                inferenceService.setGenerationParameters(null, null, null, null, enableThinking = if (model.name.contains("Gemma-4", ignoreCase = true)) false else null)
                 inferenceService.loadModel(
                     model = model,
                     preferredBackend = _selectedBackend.value,
