@@ -591,7 +591,7 @@ class ChatViewModel: ObservableObject {
     }
 
     private func normalizeStreamText(_ text: String) -> String {
-        text
+        var normalized = text
             .replacingOccurrences(of: "â€™", with: "'")
             .replacingOccurrences(of: "â€˜", with: "'")
             .replacingOccurrences(of: "â€œ", with: "\"")
@@ -599,6 +599,31 @@ class ChatViewModel: ObservableObject {
             .replacingOccurrences(of: "â€“", with: "-")
             .replacingOccurrences(of: "â€”", with: "-")
             .replacingOccurrences(of: "�", with: "'")
+
+        let leakedPrefixes = [
+            "<bos>",
+            "<eos>",
+            "<start_of_turn>model\n",
+            "<start_of_turn>model\r\n",
+            "<start_of_turn>model",
+            "<start_of_turn>",
+            "model\n",
+            "model\r\n",
+        ]
+
+        var removedPrefix = true
+        while removedPrefix {
+            removedPrefix = false
+            for prefix in leakedPrefixes {
+                if normalized.hasPrefix(prefix) {
+                    normalized.removeFirst(prefix.count)
+                    normalized = normalized.trimmingCharacters(in: .whitespacesAndNewlines)
+                    removedPrefix = true
+                }
+            }
+        }
+
+        return normalized
     }
 
     private func finishGeneratingMessage() {
