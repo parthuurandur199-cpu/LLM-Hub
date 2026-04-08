@@ -134,7 +134,7 @@ struct HomeScreen: View {
                                 switch feature.route {
                                 case "chat":
                                     onNavigateToChat()
-                                case "writing_aid", "translator", "transcriber", "scam_detector", "vibe_coder":
+                                case "writing_aid", "translator", "transcriber", "scam_detector", "vibe_coder", "image_generator":
                                     onNavigateToRoute(feature.route)
                                 default:
                                     break

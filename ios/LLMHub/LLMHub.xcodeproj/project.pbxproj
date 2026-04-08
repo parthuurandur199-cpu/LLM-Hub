@@ -28,6 +28,9 @@
 		1F3A9E5C7B2E4D6F8A1B2C3D /* ApolloTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E4B5F6A7C8D9E0F1A2B3C4D /* ApolloTheme.swift */; };
 		DF4968608455CAC5D2C20BE3 /* ChatSettingsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = E06F261B9A91F8AA8BAA4778 /* ChatSettingsSheet.swift */; };
 		E534E3B14352A9FCAA9F1A89 /* RunAnywhereLlamaCPP in Frameworks */ = {isa = PBXBuildFile; productRef = 72F0EB7DB1F54E3913BC8763 /* RunAnywhereLlamaCPP */; };
+		FA001122334455667788AABB /* StableDiffusionBackend.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA001122334455667788AACC /* StableDiffusionBackend.swift */; };
+		FA001122334455667788AADD /* StableDiffusion in Frameworks */ = {isa = PBXBuildFile; productRef = FA001122334455667788AAEE /* StableDiffusion */; };
+		FA001122334455667788AAFF /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = FA001122334455667788AA11 /* ZIPFoundation */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -67,6 +70,7 @@
 		ECD7AAE029AF6E8F7EA01B3D /* LLMBackend.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LLMBackend.swift; sourceTree = "<group>"; };
 		F5C1B532F7D3AE6F20EB4AEC /* he */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = he; path = he.lproj/Localizable.strings; sourceTree = "<group>"; };
 		F841EEA264BDE0E6E2A1BC18 /* Icon.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = Icon.png; sourceTree = "<group>"; };
+		FA001122334455667788AACC /* StableDiffusionBackend.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StableDiffusionBackend.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -77,6 +81,8 @@
 				3D9B9E094861BF2162D95F61 /* RunAnywhere in Frameworks */,
 				E534E3B14352A9FCAA9F1A89 /* RunAnywhereLlamaCPP in Frameworks */,
 				9D4F93BDDE99FDE1ECFA704A /* Accelerate.framework in Frameworks */,
+				FA001122334455667788AADD /* StableDiffusion in Frameworks */,
+				FA001122334455667788AAFF /* ZIPFoundation in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -112,6 +118,7 @@
 				8E674F93296C177D68CCEFED /* ModelDownloadScreen.swift */,
 				5D54909FE8CC139164BABB54 /* ModelManager.swift */,
 				A587C281FC51DF179CF26022 /* SettingsScreen.swift */,
+				FA001122334455667788AACC /* StableDiffusionBackend.swift */,
 			);
 			name = LLMHub;
 			path = Sources/LLMHub;
@@ -153,6 +160,8 @@
 			packageProductDependencies = (
 				9307F4EE8A20C529993E87D1 /* RunAnywhere */,
 				72F0EB7DB1F54E3913BC8763 /* RunAnywhereLlamaCPP */,
+				FA001122334455667788AAEE /* StableDiffusion */,
+				FA001122334455667788AA11 /* ZIPFoundation */,
 			);
 			productName = LLMHub;
 			productReference = 5F60B98E5AE21634E4E47E99 /* LLMHub.app */;
@@ -199,6 +208,8 @@
 			mainGroup = 60C52022B63693117913378C;
 			packageReferences = (
 				A26F31FFA020DC1866683F48 /* XCLocalSwiftPackageReference "runanywhere-sdks-latest" */,
+				FA001122334455667788AA44 /* XCRemoteSwiftPackageReference "ml-stable-diffusion" */,
+				FA001122334455667788AA55 /* XCRemoteSwiftPackageReference "ZIPFoundation" */,
 			);
 			projectDirPath = "";
 			projectRoot = "";
@@ -241,6 +252,7 @@
 				B0DC2F58405BDC55315A8099 /* ModelDownloader.swift in Sources */,
 				8372657E94B22EF042E769D9 /* ModelManager.swift in Sources */,
 				CB9C318430890100AF670AFF /* SettingsScreen.swift in Sources */,
+				FA001122334455667788AABB /* StableDiffusionBackend.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -485,6 +497,25 @@
                 };
 /* End XCLocalSwiftPackageReference section */
 
+/* Begin XCRemoteSwiftPackageReference section */
+		FA001122334455667788AA44 /* XCRemoteSwiftPackageReference "ml-stable-diffusion" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.1.1;
+			};
+			repositoryURL = "https://github.com/apple/ml-stable-diffusion";
+		};
+		FA001122334455667788AA55 /* XCRemoteSwiftPackageReference "ZIPFoundation" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.9.20;
+			};
+			repositoryURL = "https://github.com/weichsel/ZIPFoundation";
+		};
+/* End XCRemoteSwiftPackageReference section */
+
 /* Begin XCSwiftPackageProductDependency section */
 		72F0EB7DB1F54E3913BC8763 /* RunAnywhereLlamaCPP */ = {
 			isa = XCSwiftPackageProductDependency;
@@ -495,6 +526,16 @@
 			isa = XCSwiftPackageProductDependency;
 			package = A26F31FFA020DC1866683F48 /* XCLocalSwiftPackageReference "runanywhere-sdks-latest" */;
 			productName = RunAnywhere;
+		};
+		FA001122334455667788AAEE /* StableDiffusion */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = FA001122334455667788AA44 /* XCRemoteSwiftPackageReference "ml-stable-diffusion" */;
+			productName = StableDiffusion;
+		};
+		FA001122334455667788AA11 /* ZIPFoundation */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = FA001122334455667788AA55 /* XCRemoteSwiftPackageReference "ZIPFoundation" */;
+			productName = ZIPFoundation;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

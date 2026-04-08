@@ -45,10 +45,23 @@ class ModelDownloadViewModel: ObservableObject {
     }
 
     private func destinationDirectory(for model: AIModel) throws -> URL {
-        try SimplifiedFileManager.shared.getModelFolderURL(modelId: model.id, framework: model.inferenceFramework)
+        if model.isCoreMLImageGeneration {
+            guard let dir = StableDiffusionBackend.sdModelDirectory(for: model.id) else {
+                throw NSError(domain: "ModelDownload", code: -3, userInfo: [NSLocalizedDescriptionKey: "Cannot resolve documents directory"])
+            }
+            return dir
+        }
+        return try SimplifiedFileManager.shared.getModelFolderURL(modelId: model.id, framework: model.inferenceFramework)
     }
 
     private func requiredFilesExist(in directory: URL, for model: AIModel) -> (allExist: Bool, totalBytes: Int64) {
+        // CoreML models: check for sentinel file written after ZIP extraction
+        if model.isCoreMLImageGeneration {
+            let sentinel = directory.appendingPathComponent("_downloaded")
+            let exists = FileManager.default.fileExists(atPath: sentinel.path)
+            return (exists, exists ? model.sizeBytes : 0)
+        }
+
         var allExist = true
         var totalLocalBytes: Int64 = 0
 

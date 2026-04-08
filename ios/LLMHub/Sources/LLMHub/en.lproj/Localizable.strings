@@ -539,7 +539,7 @@
 "image_generator_random_seed" = "Random Seed";
 "image_generator_save" = "Save Image";
 "image_generator_download_model" = "Download Model First";
-"image_generator_download_model_desc" = "Download Absolute Reality (NPU or CPU) model from the Models screen to start creating images";
+"image_generator_download_model_desc" = "Download a Stable Diffusion model from the Models screen to start generating images.";
 "image_generator_model_not_available" = "Image generation model not available";
 "image_generator_error" = "Failed to generate image";
 "image_generation_models" = "Image Generation Models";

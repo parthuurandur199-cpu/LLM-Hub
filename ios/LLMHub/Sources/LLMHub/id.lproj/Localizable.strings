@@ -444,7 +444,7 @@
 "image_generator_random_seed" = "Seed Acak";
 "image_generator_save" = "Simpan Gambar";
 "image_generator_download_model" = "Unduh Model Terlebih Dahulu";
-"image_generator_download_model_desc" = "Unduh model pembuatan gambar untuk mulai membuat gambar";
+"image_generator_download_model_desc" = "Unduh model Stable Diffusion dari layar Model untuk mulai membuat gambar.";
 "image_generator_model_not_available" = "Model pembuatan gambar tidak tersedia";
 "image_generator_error" = "Gagal menghasilkan gambar";
 "image_generator_success" = "Gambar berhasil dihasilkan";

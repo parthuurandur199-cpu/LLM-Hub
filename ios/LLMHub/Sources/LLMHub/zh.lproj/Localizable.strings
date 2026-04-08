@@ -538,7 +538,7 @@
 "image_generator_random_seed" = "随机种子";
 "image_generator_save" = "保存图像";
 "image_generator_download_model" = "请先下载模型";
-"image_generator_download_model_desc" = "从模型列表下载Absolute Reality（NPU 或 CPU）模型，开始创建图像";
+"image_generator_download_model_desc" = "从模型列表下载 Stable Diffusion 模型，开始创建图像。";
 "image_generator_model_not_available" = "图像生成模型不可用";
 "image_generator_error" = "无法生成图片";
 "image_generation_models" = "图像生成模型";

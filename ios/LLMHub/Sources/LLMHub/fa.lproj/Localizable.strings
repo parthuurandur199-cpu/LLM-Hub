@@ -447,7 +447,7 @@
 "image_generator_random_seed" = "بذر تصادفی";
 "image_generator_save" = "ذخیره تصویر";
 "image_generator_download_model" = "ابتدا مدل را دانلود کنید";
-"image_generator_download_model_desc" = "مدل تولید تصویر را دانلود کنید تا شروع به ایجاد تصاویر کنید";
+"image_generator_download_model_desc" = "یک مدل Stable Diffusion را از صفحه مدل‌ها دانلود کنید تا شروع به تولید تصویر کنید.";
 "image_generator_model_not_available" = "مدل تولید تصویر در دسترس نیست";
 "image_generator_error" = "تولید تصویر ناموفق بود";
 "image_generator_success" = "تصویر با موفقیت تولید شد";

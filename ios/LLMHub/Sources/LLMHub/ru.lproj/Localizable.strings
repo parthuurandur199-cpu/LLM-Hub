@@ -427,7 +427,7 @@
 "image_generator_random_seed" = "Случайное Значение";
 "image_generator_save" = "Сохранить Изображение";
 "image_generator_download_model" = "Сначала Загрузите Модель";
-"image_generator_download_model_desc" = "Загрузите модель генерации изображений, чтобы начать создание изображений";
+"image_generator_download_model_desc" = "Загрузите модель Stable Diffusion с экрана Модели, чтобы начать генерацию изображений.";
 "image_generator_model_not_available" = "Модель генерации изображений недоступна";
 "image_generator_error" = "Не удалось создать изображение";
 "image_generator_success" = "Изображение успешно создано";

@@ -4116,3 +4116,620 @@ struct VibeCoderScreen: View {
         }
     }
 }
+
+// MARK: - ImageGeneratorScreen
+
+struct ImageGeneratorScreen: View {
+    @EnvironmentObject var settings: AppSettings
+    @AppStorage("sd_selected_model_id") private var selectedModelId: String = ""
+    @AppStorage("sd_steps") private var storedSteps: Double = 20
+    @AppStorage("sd_denoise_strength") private var storedDenoiseStrength: Double = 0.7
+
+    @State private var promptText = ""
+    @FocusState private var promptFocused: Bool
+    @State private var seed: Int = Int.random(in: 0..<1_000_000)
+    @State private var generatedImages: [UIImage] = []
+    @State private var isGenerating = false
+    @State private var currentPage = 0
+    @State private var showSettings = false
+    @State private var errorMessage: String?
+    @State private var inputImage: UIImage?
+    @State private var selectedImageItem: PhotosPickerItem?
+    @State private var generateTask: Task<Void, Never>?
+
+    @ObservedObject private var sdBackend = StableDiffusionBackend.shared
+
+    let onNavigateBack: () -> Void
+    let onNavigateToModels: () -> Void
+
+    private var availableModels: [AIModel] {
+        ModelData.models.filter { $0.isCoreMLImageGeneration && StableDiffusionBackend.isCoreMLModelDownloaded(modelId: $0.id) }
+    }
+
+    private var selectedModel: AIModel? {
+        availableModels.first(where: { $0.id == selectedModelId }) ?? availableModels.first
+    }
+
+    var body: some View {
+        Group {
+            if availableModels.isEmpty {
+                noModelView
+            } else if !sdBackend.isLoaded {
+                loadModelView
+            } else {
+                mainGenerationView
+            }
+        }
+        .navigationTitle(settings.localized("image_generator_title"))
+        .navigationBarTitleDisplayMode(.inline)
+        .apolloScreenBackground()
+        .toolbarBackground(.hidden, for: .navigationBar)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarLeading) {
+                Button {
+                    generateTask?.cancel()
+                    onNavigateBack()
+                } label: { Image(systemName: "arrow.left") }
+            }
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button { showSettings = true } label: { Image(systemName: "slider.horizontal.3") }
+            }
+        }
+        .sheet(isPresented: $showSettings) {
+            ImageGeneratorSettingsSheet(
+                availableModels: availableModels,
+                selectedModelId: $selectedModelId,
+                steps: $storedSteps,
+                denoiseStrength: $storedDenoiseStrength,
+                isLoaded: sdBackend.isLoaded,
+                isLoading: sdBackend.isLoading,
+                onLoad: {
+                    guard let model = selectedModel else { return }
+                    Task {
+                        do {
+                            try await sdBackend.loadModel(model)
+                        } catch {
+                            errorMessage = error.localizedDescription
+                        }
+                    }
+                },
+                onUnload: { sdBackend.unloadModel() }
+            )
+        }
+        .onChange(of: selectedImageItem) { _, item in
+            guard let item else { inputImage = nil; return }
+            Task {
+                if let data = try? await item.loadTransferable(type: Data.self),
+                   let img = UIImage(data: data) {
+                    inputImage = img
+                } else {
+                    inputImage = nil
+                }
+            }
+        }
+        .onAppear {
+            if selectedModelId.isEmpty || !availableModels.contains(where: { $0.id == selectedModelId }) {
+                selectedModelId = availableModels.first?.id ?? ""
+            }
+        }
+        .onDisappear {
+            generateTask?.cancel()
+        }
+        .overlay(alignment: .bottom) {
+            if let msg = errorMessage {
+                Text(msg)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .padding(.horizontal)
+                    .padding(.bottom, 8)
+                    .onTapGesture { errorMessage = nil }
+            }
+        }
+    }
+
+    // MARK: - No-Model State
+
+    private var noModelView: some View {
+        VStack(spacing: 20) {
+            Image(systemName: "paintpalette.fill")
+                .font(.system(size: 56, weight: .semibold))
+                .foregroundStyle(.secondary)
+            Text(settings.localized("image_generator_download_model"))
+                .font(.title3.weight(.bold))
+                .multilineTextAlignment(.center)
+            Text(settings.localized("image_generator_download_model_desc"))
+                .font(.subheadline)
+                .foregroundStyle(.white.opacity(0.7))
+                .multilineTextAlignment(.center)
+                .padding(.horizontal)
+            Button {
+                onNavigateToModels()
+            } label: {
+                HStack {
+                    Spacer()
+                    Text(settings.localized("download_models"))
+                    Spacer()
+                }
+                .frame(height: 50)
+                .contentShape(Rectangle())
+            }
+            .frame(maxWidth: 260)
+            .liquidGlassPrimaryButton(cornerRadius: 12)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    // MARK: - Load-Model State
+
+    private var loadModelView: some View {
+        VStack(spacing: 20) {
+            if sdBackend.isLoading {
+                ProgressView()
+                    .scaleEffect(1.4)
+                Text(settings.localized("image_generator_loading_model"))
+                    .font(.title3.weight(.bold))
+            } else {
+                Image(systemName: "cpu.fill")
+                    .font(.system(size: 56, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Text(settings.localized("image_generator_load_model_title"))
+                    .font(.title3.weight(.bold))
+                    .multilineTextAlignment(.center)
+                Text(settings.localized("image_generator_load_model_desc"))
+                    .font(.subheadline)
+                    .foregroundStyle(.white.opacity(0.7))
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
+                Button {
+                    showSettings = true
+                } label: {
+                    HStack {
+                        Spacer()
+                        Text(settings.localized("feature_settings_title"))
+                        Spacer()
+                    }
+                    .frame(height: 50)
+                    .contentShape(Rectangle())
+                }
+                .frame(maxWidth: 260)
+                .liquidGlassPrimaryButton(cornerRadius: 12)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    // MARK: - Main Generation View
+
+    private var mainGenerationView: some View {
+        GeometryReader { geo in
+            let isLandscape = geo.size.width > geo.size.height
+            if isLandscape && !generatedImages.isEmpty {
+                landscapeLayout
+            } else {
+                portraitLayout
+            }
+        }
+    }
+
+    // MARK: - Portrait Layout
+
+    private var portraitLayout: some View {
+        ScrollView {
+            VStack(spacing: 14) {
+                promptCard
+                img2imgCard
+                if !generatedImages.isEmpty {
+                    imageSwipeView
+                }
+                generateButton
+            }
+            .padding(.horizontal)
+            .padding(.vertical, 12)
+        }
+    }
+
+    // MARK: - Landscape Layout (side-by-side)
+
+    private var landscapeLayout: some View {
+        HStack(spacing: 14) {
+            ScrollView {
+                VStack(spacing: 14) {
+                    promptCard
+                    img2imgCard
+                    generateButton
+                    if !generatedImages.isEmpty {
+                        saveButton
+                    }
+                }
+                .padding(.vertical, 12)
+            }
+            .frame(maxWidth: .infinity)
+            imageSwipeView
+                .frame(maxWidth: .infinity)
+        }
+        .padding(.horizontal)
+    }
+
+    // MARK: - Prompt Card
+
+    private var promptCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(settings.localized("image_generator_prompt_label"))
+                .font(.headline)
+            TextEditor(text: $promptText)
+                .focused($promptFocused)
+                .frame(minHeight: 100)
+                .scrollContentBackground(.hidden)
+                .background(Color.white.opacity(0.02))
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .disabled(isGenerating)
+                .overlay(
+                    Group {
+                        if promptText.isEmpty {
+                            Text(settings.localized("image_generator_prompt_hint"))
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 16)
+                                .allowsHitTesting(false)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                        }
+                    }
+                )
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 12)
+        .background(.ultraThinMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.white.opacity(0.14), lineWidth: 1))
+    }
+
+    // MARK: - Img2Img Card
+
+    private var img2imgCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(settings.localized("image_generator_img2img"))
+                .font(.headline)
+            HStack(spacing: 12) {
+                PhotosPicker(
+                    selection: $selectedImageItem,
+                    matching: .images
+                ) {
+                    HStack {
+                        Image(systemName: "photo")
+                        Text(settings.localized(inputImage != nil ? "image_generator_change_image" : "image_generator_select_image"))
+                            .lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 40)
+                    .contentShape(Rectangle())
+                }
+                .foregroundStyle(.white)
+                .background(.ultraThinMaterial)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(0.18), lineWidth: 1))
+                .disabled(isGenerating)
+
+                if let thumb = inputImage {
+                    ZStack(alignment: .topTrailing) {
+                        Image(uiImage: thumb)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: 48, height: 48)
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                        Button {
+                            inputImage = nil
+                            selectedImageItem = nil
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.caption)
+                                .foregroundStyle(.white, .black.opacity(0.5))
+                        }
+                    }
+                }
+            }
+
+            if inputImage != nil {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(String(format: settings.localized("image_generator_denoise_strength"), storedDenoiseStrength))
+                        .font(.caption)
+                    Text(settings.localized("image_generator_denoise_strength_desc"))
+                        .font(.caption2)
+                        .foregroundStyle(.white.opacity(0.6))
+                    Slider(value: $storedDenoiseStrength, in: 0.1...1.0)
+                        .disabled(isGenerating)
+                }
+            }
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 12)
+        .background(.ultraThinMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.white.opacity(0.14), lineWidth: 1))
+    }
+
+    // MARK: - Image Swipe View (HorizontalPager equivalent)
+
+    private var imageSwipeView: some View {
+        VStack(spacing: 8) {
+            TabView(selection: $currentPage) {
+                ForEach(0..<(generatedImages.count + 1), id: \.self) { page in
+                    if page < generatedImages.count {
+                        Image(uiImage: generatedImages[page])
+                            .resizable()
+                            .scaledToFit()
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                            .padding(.horizontal, 4)
+                            .tag(page)
+                            .contextMenu {
+                                Button {
+                                    saveImageToPhotos(generatedImages[page])
+                                } label: {
+                                    Label(settings.localized("image_generator_save"), systemImage: "square.and.arrow.down")
+                                }
+                            }
+                    } else {
+                        placeholderPage
+                            .tag(page)
+                    }
+                }
+            }
+            .tabViewStyle(.page(indexDisplayMode: .never))
+            .frame(minHeight: 300)
+            .onChange(of: currentPage) { _, page in
+                if page == generatedImages.count && !isGenerating {
+                    triggerVariation()
+                }
+            }
+
+            // Page indicator dots
+            HStack(spacing: 6) {
+                ForEach(0..<generatedImages.count, id: \.self) { i in
+                    Circle()
+                        .fill(currentPage == i ? Color.white : Color.white.opacity(0.35))
+                        .frame(width: 7, height: 7)
+                }
+                // "+1" placeholder dot
+                Circle()
+                    .fill(currentPage == generatedImages.count ? Color.white : Color.white.opacity(0.35))
+                    .frame(width: 7, height: 7)
+            }
+
+            if !generatedImages.isEmpty && currentPage < generatedImages.count {
+                saveButton
+            }
+        }
+    }
+
+    private var placeholderPage: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color.white.opacity(0.05))
+                .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.12), lineWidth: 1))
+            if isGenerating {
+                VStack(spacing: 16) {
+                    ProgressView()
+                        .scaleEffect(1.3)
+                        .tint(.white)
+                    Text(String(format: settings.localized("image_generator_variation"), generatedImages.count + 1))
+                        .font(.subheadline)
+                        .foregroundStyle(.white.opacity(0.7))
+                }
+            } else {
+                VStack(spacing: 12) {
+                    Image(systemName: "plus.circle")
+                        .font(.system(size: 44, weight: .light))
+                        .foregroundStyle(.white.opacity(0.5))
+                    Text(settings.localized("image_generator_swipe_more"))
+                        .font(.subheadline)
+                        .foregroundStyle(.white.opacity(0.6))
+                        .multilineTextAlignment(.center)
+                }
+            }
+        }
+        .frame(minHeight: 300)
+        .padding(.horizontal, 4)
+    }
+
+    // MARK: - Generate Button
+
+    private var generateButton: some View {
+        Button {
+            if isGenerating {
+                generateTask?.cancel()
+                isGenerating = false
+            } else {
+                startGeneration(clearAll: true)
+            }
+        } label: {
+            HStack(spacing: 8) {
+                if isGenerating {
+                    ProgressView()
+                        .tint(.white)
+                        .scaleEffect(0.85)
+                    Text(settings.localized("image_generator_generating"))
+                        .lineLimit(1)
+                } else {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 13, weight: .bold))
+                    Text(settings.localized("image_generator_generate"))
+                        .lineLimit(1)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: 52)
+        }
+        .foregroundStyle(.white)
+        .liquidGlassPrimaryButton(cornerRadius: 12)
+        .disabled(!isGenerating && promptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    }
+
+    private var saveButton: some View {
+        Button {
+            if currentPage < generatedImages.count {
+                saveImageToPhotos(generatedImages[currentPage])
+            }
+        } label: {
+            HStack {
+                Spacer()
+                Text(settings.localized("image_generator_save"))
+                Spacer()
+            }
+            .frame(height: 44)
+            .contentShape(Rectangle())
+        }
+        .foregroundStyle(.white)
+        .liquidGlassPrimaryButton(cornerRadius: 12)
+    }
+
+    // MARK: - Generation Logic
+
+    private func startGeneration(clearAll: Bool) {
+        guard !promptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        if clearAll {
+            generatedImages.removeAll()
+            currentPage = 0
+            seed = Int.random(in: 0..<1_000_000)
+        }
+        runGeneration(usingSeed: UInt32(bitPattern: Int32(truncatingIfNeeded: seed)))
+    }
+
+    private func triggerVariation() {
+        guard !isGenerating, sdBackend.isLoaded else { return }
+        let varSeed = UInt32.random(in: 0..<UInt32.max)
+        runGeneration(usingSeed: varSeed)
+    }
+
+    private func runGeneration(usingSeed genSeed: UInt32) {
+        isGenerating = true
+        promptFocused = false
+        let prompt = promptText
+        let steps = Int(storedSteps)
+        let denoiseStrength = Float(storedDenoiseStrength)
+        let inputCGImage = inputImage?.cgImage
+
+        generateTask?.cancel()
+        generateTask = Task {
+            defer { isGenerating = false }
+            do {
+                let img = try await sdBackend.generateImage(
+                    prompt: prompt,
+                    steps: steps,
+                    seed: genSeed,
+                    inputImage: inputCGImage,
+                    denoiseStrength: denoiseStrength
+                )
+                if let img {
+                    generatedImages.append(img)
+                    currentPage = generatedImages.count - 1
+                }
+            } catch is CancellationError {
+                // ignore
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func saveImageToPhotos(_ image: UIImage) {
+        UIImageWriteToSavedPhotosAlbum(image, nil, nil, nil)
+        errorMessage = settings.localized("image_generator_saved")
+    }
+}
+
+// MARK: - ImageGeneratorSettingsSheet
+
+private struct ImageGeneratorSettingsSheet: View {
+    @EnvironmentObject var settings: AppSettings
+    let availableModels: [AIModel]
+    @Binding var selectedModelId: String
+    @Binding var steps: Double
+    @Binding var denoiseStrength: Double
+    let isLoaded: Bool
+    let isLoading: Bool
+    let onLoad: () -> Void
+    let onUnload: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 20) {
+                    // Model Picker
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text(settings.localized("select_model_title"))
+                            .font(.headline)
+                        if availableModels.isEmpty {
+                            Label(settings.localized("image_generator_no_models"), systemImage: "exclamationmark.triangle")
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Picker(settings.localized("select_model"), selection: $selectedModelId) {
+                                ForEach(availableModels) { model in
+                                    Text(model.name).tag(model.id)
+                                }
+                            }
+                            .pickerStyle(.menu)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                    .padding()
+                    .background(.regularMaterial)
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+
+                    // Steps Slider
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("\(settings.localized("image_generator_iterations")): \(Int(steps))")
+                            .font(.headline)
+                        Slider(value: $steps, in: 10...50, step: 1)
+                    }
+                    .padding()
+                    .background(.regularMaterial)
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+
+                    // Load / Unload
+                    VStack(spacing: 12) {
+                        Button {
+                            onLoad()
+                            dismiss()
+                        } label: {
+                            if isLoading {
+                                HStack {
+                                    ProgressView()
+                                    Text(settings.localized("image_generator_loading_model"))
+                                }
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 50)
+                            } else {
+                                Text(settings.localized(isLoaded ? "reload_model" : "image_generator_load_model"))
+                                    .frame(maxWidth: .infinity)
+                                    .frame(height: 50)
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(availableModels.isEmpty || isLoading)
+
+                        if isLoaded {
+                            Button(role: .destructive) {
+                                onUnload()
+                                dismiss()
+                            } label: {
+                                Text(settings.localized("unload_model"))
+                                    .frame(maxWidth: .infinity)
+                                    .frame(height: 50)
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                    }
+                }
+                .padding()
+            }
+            .navigationTitle(settings.localized("feature_settings_title"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(settings.localized("close")) { dismiss() }
+                }
+            }
+        }
+    }
+}

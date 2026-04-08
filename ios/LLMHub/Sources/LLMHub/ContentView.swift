@@ -19,6 +19,8 @@ struct ContentView: View {
                         path.append(Screen.transcriber)
                     case "scam_detector":
                         path.append(Screen.scamDetector)
+                    case "image_generator":
+                        path.append(Screen.imageGenerator)
                     case "vibe_coder":
                         path.append(Screen.vibeCoder)
                     default:
@@ -62,6 +64,12 @@ struct ContentView: View {
                 case .vibeCoder:
                     VibeCoderScreen(onNavigateBack: { path.removeLast() })
                         .navigationBarBackButtonHidden(true)
+                case .imageGenerator:
+                    ImageGeneratorScreen(
+                        onNavigateBack: { path.removeLast() },
+                        onNavigateToModels: { path.append(Screen.models) }
+                    )
+                    .navigationBarBackButtonHidden(true)
                 }
             }
         }
@@ -77,4 +85,5 @@ enum Screen: Hashable {
     case transcriber
     case scamDetector
     case vibeCoder
+    case imageGenerator
 }

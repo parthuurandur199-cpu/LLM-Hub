@@ -6,6 +6,7 @@ public enum ModelFormat: String, Codable, Sendable {
     case litertlm
     case gguf
     case onnx
+    case coreml
 }
 
 public enum DownloadState: Equatable, Sendable {
@@ -122,13 +123,25 @@ public struct AIModel: Identifiable, Codable, Sendable {
     }
 
     public var requiredFileNames: [String] {
-        allDownloadURLs.compactMap { downloadURL in
+        if modelFormat == .coreml {
+            // CoreML models are downloaded as ZIPs and extracted; sentinel marks completion
+            return ["_downloaded"]
+        }
+        return allDownloadURLs.compactMap { downloadURL in
             URLComponents(url: downloadURL, resolvingAgainstBaseURL: false)?.path.split(separator: "/").last.map(String.init)
         }
     }
 
     public var inferenceFramework: InferenceFramework {
-        modelFormat == .onnx ? .onnx : .llamaCpp
+        switch modelFormat {
+        case .onnx: return .onnx
+        case .coreml: return .llamaCpp // CoreML models manage their own directories
+        default: return .llamaCpp
+        }
+    }
+
+    public var isCoreMLImageGeneration: Bool {
+        modelFormat == .coreml && category == .imageGeneration
     }
 
     public var isDependencyOnly: Bool {
@@ -2048,6 +2061,41 @@ public static let models: [AIModel] = [
         requirements: ModelRequirements(minRamGB: 1, recommendedRamGB: 2),
         contextWindowSize: 0,
         modelFormat: .gguf,
+        additionalFiles: []
+    ),
+    // MARK: - Image Generation (CoreML Stable Diffusion)
+    AIModel(
+        id: "sd-v1-5-split-einsum",
+        name: "Stable Diffusion v1.5 (ANE)",
+        description: "Stable Diffusion v1.5 — split-einsum variant optimised for Apple Neural Engine. Works on all compute units (CPU/GPU/ANE). Generates 512×512 images. Requires ~2 GB storage. (1.97 GB)",
+        url: "https://huggingface.co/coreml-community/coreml-stable-diffusion-v1-5/resolve/main/split-einsum/v1-5_split-einsum.zip",
+        category: .imageGeneration,
+        sizeBytes: 2115469312,
+        source: "Runway ML / Core ML Community",
+        supportsVision: false,
+        supportsAudio: false,
+        supportsThinking: false,
+        supportsGpu: false,
+        requirements: ModelRequirements(minRamGB: 4, recommendedRamGB: 6),
+        contextWindowSize: 0,
+        modelFormat: .coreml,
+        additionalFiles: []
+    ),
+    AIModel(
+        id: "sd-v1-5-original",
+        name: "Stable Diffusion v1.5 (GPU)",
+        description: "Stable Diffusion v1.5 — original variant for CPU & GPU only (no ANE). Generates 512×512 images. Requires ~2 GB storage. (1.97 GB)",
+        url: "https://huggingface.co/coreml-community/coreml-stable-diffusion-v1-5/resolve/main/original/v1-5_original.zip",
+        category: .imageGeneration,
+        sizeBytes: 2115469312,
+        source: "Runway ML / Core ML Community",
+        supportsVision: false,
+        supportsAudio: false,
+        supportsThinking: false,
+        supportsGpu: true,
+        requirements: ModelRequirements(minRamGB: 4, recommendedRamGB: 6),
+        contextWindowSize: 0,
+        modelFormat: .coreml,
         additionalFiles: []
     ),
 ]

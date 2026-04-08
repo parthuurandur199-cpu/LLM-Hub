@@ -461,7 +461,7 @@
 "image_generator_random_seed" = "Graine Aléatoire";
 "image_generator_save" = "Enregistrer l\'Image";
 "image_generator_download_model" = "Télécharger le Modèle d\'Abord";
-"image_generator_download_model_desc" = "Téléchargez le modèle de génération d\'images pour commencer à créer des images";
+"image_generator_download_model_desc" = "Téléchargez un modèle Stable Diffusion depuis l\'écran Modèles pour commencer à générer des images.";
 "image_generator_model_not_available" = "Modèle de génération d\'images non disponible";
 "image_generator_error" = "Échec de la génération de l\'image";
 "image_generator_success" = "Image générée avec succès";

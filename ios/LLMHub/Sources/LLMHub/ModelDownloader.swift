@@ -1,4 +1,5 @@
 import Foundation
+import ZIPFoundation
 
 private extension URLError.Code {
     var isTransientDownloadFailure: Bool {
@@ -111,6 +112,17 @@ public actor ModelDownloader {
         destinationDir: URL,
         onProgress: @Sendable @escaping (DownloadUpdate) -> Void
     ) async throws {
+        // CoreML models (Stable Diffusion) are distributed as ZIP archives;
+        // download, extract, and store a sentinel to mark completion.
+        if model.modelFormat == .coreml {
+            try await downloadAndExtractCoreML(
+                model: model,
+                hfToken: hfToken,
+                destinationDir: destinationDir,
+                onProgress: onProgress
+            )
+            return
+        }
         let totalSize = model.sizeBytes
         var downloadedBytesPerFile: [String: Int64] = [:]
         var expectedBytesPerFile: [String: Int64] = [:]
@@ -329,4 +341,181 @@ public actor ModelDownloader {
             onProgress(DownloadUpdate(bytesDownloaded: finalBytes, totalBytes: totalSize, speedBytesPerSecond: 0))
         }
     }
+
+    // MARK: - CoreML ZIP Download + Extraction
+
+    private func downloadAndExtractCoreML(
+        model: AIModel,
+        hfToken: String?,
+        destinationDir: URL,
+        onProgress: @Sendable @escaping (DownloadUpdate) -> Void
+    ) async throws {
+        guard let zipURL = model.allDownloadURLs.first else {
+            throw NSError(domain: "ModelDownloader", code: -4, userInfo: [NSLocalizedDescriptionKey: "No download URL for CoreML model"])
+        }
+
+        let totalSize = model.sizeBytes
+        let sentinelURL = destinationDir.appendingPathComponent("_downloaded")
+
+        // Already extracted
+        if FileManager.default.fileExists(atPath: sentinelURL.path) {
+            onProgress(DownloadUpdate(bytesDownloaded: totalSize, totalBytes: totalSize, speedBytesPerSecond: 0))
+            return
+        }
+
+        if !FileManager.default.fileExists(atPath: destinationDir.path) {
+            try FileManager.default.createDirectory(at: destinationDir, withIntermediateDirectories: true)
+        }
+
+        let tempZipURL = destinationDir.appendingPathComponent("_temp_download.zip")
+
+        // Download the ZIP with resume support
+        let realtimeWindowSeconds: TimeInterval = 3.0
+        var throughputSamples: [(time: Date, bytes: Int64)] = []
+        func recordTransfer(_ bytes: Int64) {
+            let now = Date()
+            throughputSamples.append((time: now, bytes: bytes))
+            let cutoff = now.addingTimeInterval(-realtimeWindowSeconds)
+            throughputSamples.removeAll { $0.time < cutoff }
+        }
+        func realtimeSpeed() -> Double {
+            let now = Date()
+            let cutoff = now.addingTimeInterval(-realtimeWindowSeconds)
+            throughputSamples.removeAll { $0.time < cutoff }
+            guard let firstTime = throughputSamples.first?.time else { return 0 }
+            let bytes = throughputSamples.reduce(Int64(0)) { $0 + $1.bytes }
+            let span = max(0.1, now.timeIntervalSince(firstTime))
+            return Double(bytes) / span
+        }
+
+        let maxRetries = 6
+        var attempt = 0
+        var downloadComplete = false
+        var downloadedBytes: Int64 = 0
+
+        while !downloadComplete {
+            do {
+                var existingBytes = localFileSize(at: tempZipURL)
+                var request = URLRequest(url: zipURL, cachePolicy: .reloadIgnoringLocalCacheData)
+                if let token = hfToken, !token.isEmpty {
+                    request.addValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+                }
+                if existingBytes > 0 {
+                    request.addValue("bytes=\(existingBytes)-", forHTTPHeaderField: "Range")
+                }
+
+                let (bytes, response) = try await urlSession.bytes(for: request)
+                guard let httpResponse = response as? HTTPURLResponse else {
+                    throw NSError(domain: "ModelDownloader", code: -1, userInfo: [NSLocalizedDescriptionKey: "No HTTP response"])
+                }
+
+                if !(200...299).contains(httpResponse.statusCode) {
+                    if httpResponse.statusCode == 416 {
+                        // Already complete
+                        existingBytes = localFileSize(at: tempZipURL)
+                        downloadedBytes = existingBytes
+                        onProgress(DownloadUpdate(bytesDownloaded: existingBytes, totalBytes: totalSize, speedBytesPerSecond: 0))
+                        downloadComplete = true
+                        break
+                    }
+                    let reason = HTTPURLResponse.localizedString(forStatusCode: httpResponse.statusCode)
+                    throw NSError(domain: "ModelDownloader", code: httpResponse.statusCode, userInfo: [NSLocalizedDescriptionKey: "HTTP \(httpResponse.statusCode): \(reason)"])
+                }
+
+                if !FileManager.default.fileExists(atPath: tempZipURL.path) {
+                    FileManager.default.createFile(atPath: tempZipURL.path, contents: nil)
+                }
+                if existingBytes > 0 && httpResponse.statusCode == 200 {
+                    try? FileManager.default.removeItem(at: tempZipURL)
+                    FileManager.default.createFile(atPath: tempZipURL.path, contents: nil)
+                    existingBytes = 0
+                }
+                let fileHandle = try FileHandle(forWritingTo: tempZipURL)
+                defer { try? fileHandle.close() }
+                if existingBytes > 0 {
+                    try fileHandle.seekToEnd()
+                } else {
+                    try fileHandle.truncate(atOffset: 0)
+                }
+
+                var byteCount: Int64 = existingBytes
+                var buffer = Data()
+                let chunkSize = 64 * 1024
+
+                for try await byte in bytes {
+                    buffer.append(byte)
+                    byteCount += 1
+                    if buffer.count >= chunkSize {
+                        let flushed = Int64(buffer.count)
+                        try fileHandle.write(contentsOf: buffer)
+                        buffer.removeAll(keepingCapacity: true)
+                        recordTransfer(flushed)
+                        downloadedBytes = byteCount
+                        // Report 90% of progress for the download phase
+                        let reportedBytes = Int64(Double(byteCount) * 0.9)
+                        onProgress(DownloadUpdate(bytesDownloaded: reportedBytes, totalBytes: totalSize, speedBytesPerSecond: realtimeSpeed()))
+                    }
+                }
+                if !buffer.isEmpty {
+                    let flushed = Int64(buffer.count)
+                    try fileHandle.write(contentsOf: buffer)
+                    buffer.removeAll()
+                    recordTransfer(flushed)
+                }
+                downloadedBytes = byteCount
+                downloadComplete = true
+            } catch let error as URLError where error.code.isTransientDownloadFailure && attempt < maxRetries {
+                attempt += 1
+                let delay = min(pow(2.0, Double(attempt - 1)), 30.0)
+                try await Task.sleep(for: .seconds(delay))
+            }
+        }
+
+        // Report 90% — now extract
+        onProgress(DownloadUpdate(bytesDownloaded: Int64(Double(totalSize) * 0.9), totalBytes: totalSize, speedBytesPerSecond: 0))
+
+        // Extract ZIP into a temp subdirectory, then flatten contents into destinationDir
+        let extractTempDir = destinationDir.appendingPathComponent("_extract_temp")
+        try? FileManager.default.removeItem(at: extractTempDir)
+        try FileManager.default.createDirectory(at: extractTempDir, withIntermediateDirectories: true)
+
+        try extractZip(at: tempZipURL, to: extractTempDir)
+
+        // Flatten: if ZIP contained a single top-level folder, move its contents up
+        let extractedItems = (try? FileManager.default.contentsOfDirectory(at: extractTempDir, includingPropertiesForKeys: nil)) ?? []
+        var sourceDir = extractTempDir
+        if extractedItems.count == 1, let single = extractedItems.first {
+            var isDir: ObjCBool = false
+            if FileManager.default.fileExists(atPath: single.path, isDirectory: &isDir), isDir.boolValue {
+                sourceDir = single
+            }
+        }
+
+        // Move extracted model files to destinationDir
+        let modelFiles = (try? FileManager.default.contentsOfDirectory(at: sourceDir, includingPropertiesForKeys: nil)) ?? []
+        for item in modelFiles {
+            let dest = destinationDir.appendingPathComponent(item.lastPathComponent)
+            try? FileManager.default.removeItem(at: dest)
+            try FileManager.default.moveItem(at: item, to: dest)
+        }
+
+        // Clean up
+        try? FileManager.default.removeItem(at: extractTempDir)
+        try? FileManager.default.removeItem(at: tempZipURL)
+
+        // Write sentinel to mark successful extraction
+        FileManager.default.createFile(atPath: sentinelURL.path, contents: Data())
+        onProgress(DownloadUpdate(bytesDownloaded: totalSize, totalBytes: totalSize, speedBytesPerSecond: 0))
+    }
+
+    private func extractZip(at zipURL: URL, to destinationURL: URL) throws {
+        try FileManager.default.createDirectory(at: destinationURL, withIntermediateDirectories: true)
+        let fm = FileManager.default
+        // ZIPFoundation FileManager extension: skips __MACOSX entries automatically.
+        try fm.unzipItem(at: zipURL, to: destinationURL)
+    }
+}
+
+private extension Data {
+    // No longer needed — extraction handled by ZIPFoundation FileManager extension.
 }

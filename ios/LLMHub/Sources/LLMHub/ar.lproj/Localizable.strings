@@ -444,7 +444,7 @@
 "image_generator_random_seed" = "بذرة عشوائية";
 "image_generator_save" = "حفظ الصورة";
 "image_generator_download_model" = "قم بتنزيل النموذج أولاً";
-"image_generator_download_model_desc" = "قم بتنزيل نموذج توليد الصور لبدء إنشاء الصور";
+"image_generator_download_model_desc" = "قم بتنزيل نموذج Stable Diffusion من شاشة النماذج لبدء إنشاء الصور.";
 "image_generator_model_not_available" = "نموذج توليد الصور غير متاح";
 "image_generator_error" = "فشل إنشاء الصورة";
 "image_generator_success" = "تم إنشاء الصورة بنجاح";

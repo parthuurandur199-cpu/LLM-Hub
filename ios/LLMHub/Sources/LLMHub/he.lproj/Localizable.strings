@@ -447,7 +447,7 @@
 "image_generator_random_seed" = "זרע אקראי";
 "image_generator_save" = "שמור תמונה";
 "image_generator_download_model" = "הורד מודל תחילה";
-"image_generator_download_model_desc" = "הורד את מודל יצירת התמונות כדי להתחיל ליצור תמונות";
+"image_generator_download_model_desc" = "הורד מודל Stable Diffusion ממסך המודלים כדי להתחיל ליצור תמונות.";
 "image_generator_model_not_available" = "מודל יצירת תמונות לא זמין";
 "image_generator_error" = "נכשל ביצירת התמונה";
 "image_generator_success" = "התמונה נוצרה בהצלחה";

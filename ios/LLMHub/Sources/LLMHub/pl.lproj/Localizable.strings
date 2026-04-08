@@ -444,7 +444,7 @@
 "image_generator_random_seed" = "Losowe Ziarno";
 "image_generator_save" = "Zapisz Obraz";
 "image_generator_download_model" = "Najpierw Pobierz Model";
-"image_generator_download_model_desc" = "Pobierz model generowania obrazów, aby rozpocząć tworzenie obrazów";
+"image_generator_download_model_desc" = "Pobierz model Stable Diffusion z ekranu Modele, aby rozpocząć generowanie obrazów.";
 "image_generator_model_not_available" = "Model generowania obrazów niedostępny";
 "image_generator_error" = "Nie udało się wygenerować obrazu";
 "image_generator_success" = "Obraz wygenerowany pomyślnie";

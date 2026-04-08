@@ -444,7 +444,7 @@
 "image_generator_random_seed" = "Rastgele Tohum";
 "image_generator_save" = "Görseli Kaydet";
 "image_generator_download_model" = "Önce Model İndirin";
-"image_generator_download_model_desc" = "Görsel oluşturmaya başlamak için görsel oluşturma modelini indirin";
+"image_generator_download_model_desc" = "Görsel oluşturmaya başlamak için Modeller ekranından bir Stable Diffusion modeli indirin.";
 "image_generator_model_not_available" = "Görsel oluşturma modeli mevcut değil";
 "image_generator_error" = "Görsel oluşturulamadı";
 "image_generator_success" = "Görsel başarıyla oluşturuldu";

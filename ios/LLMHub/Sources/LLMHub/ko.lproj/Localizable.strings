@@ -444,7 +444,7 @@
 "image_generator_random_seed" = "랜덤 시드";
 "image_generator_save" = "이미지 저장";
 "image_generator_download_model" = "먼저 모델 다운로드";
-"image_generator_download_model_desc" = "이미지 생성 모델을 다운로드하여 이미지 생성을 시작하세요";
+"image_generator_download_model_desc" = "모델 화면에서 Stable Diffusion 모델을 다운로드하여 이미지 생성을 시작하세요.";
 "image_generator_model_not_available" = "이미지 생성 모델을 사용할 수 없습니다";
 "image_generator_error" = "이미지 생성 실패";
 "image_generator_success" = "이미지가 성공적으로 생성되었습니다";

@@ -16,14 +16,18 @@ let package = Package(
         ),
     ],
     dependencies: [
-        .package(path: "../runanywhere-sdks-latest")
+        .package(path: "../runanywhere-sdks-latest"),
+        .package(url: "https://github.com/apple/ml-stable-diffusion", from: "1.1.1"),
+        .package(url: "https://github.com/weichsel/ZIPFoundation", from: "0.9.20")
     ],
     targets: [
         .target(
             name: "LLMHub",
             dependencies: [
                 .product(name: "RunAnywhere", package: "runanywhere-sdks"),
-                .product(name: "RunAnywhereLlamaCPP", package: "runanywhere-sdks")
+                .product(name: "RunAnywhereLlamaCPP", package: "runanywhere-sdks"),
+                .product(name: "StableDiffusion", package: "ml-stable-diffusion"),
+                .product(name: "ZIPFoundation", package: "ZIPFoundation")
             ],
             exclude: [
                 "check_strings.py"

@@ -410,7 +410,7 @@
 "image_generator_random_seed" = "Semente Aleatória";
 "image_generator_save" = "Salvar Imagem";
 "image_generator_download_model" = "Baixe o Modelo Primeiro";
-"image_generator_download_model_desc" = "Baixe o modelo de geração de imagens para começar a criar imagens";
+"image_generator_download_model_desc" = "Baixe um modelo Stable Diffusion na tela de Modelos para começar a gerar imagens.";
 "image_generator_model_not_available" = "Modelo de geração de imagens não disponível";
 "image_generator_error" = "Falha ao gerar imagem";
 "image_generator_success" = "Imagem gerada com sucesso";
