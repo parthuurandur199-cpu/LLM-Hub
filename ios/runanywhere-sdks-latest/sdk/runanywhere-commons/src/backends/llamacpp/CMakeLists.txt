@@ -157,6 +157,10 @@ if(RAC_VLM_USE_MTMD)
         ${llamacpp_SOURCE_DIR}/tools/mtmd/models/paddleocr.cpp
         ${llamacpp_SOURCE_DIR}/tools/mtmd/models/nemotron-v2-vl.cpp
         ${llamacpp_SOURCE_DIR}/tools/mtmd/models/gemma4v.cpp
+        ${llamacpp_SOURCE_DIR}/tools/mtmd/models/gemma4a.cpp
+        ${llamacpp_SOURCE_DIR}/tools/mtmd/models/dotsocr.cpp
+        ${llamacpp_SOURCE_DIR}/tools/mtmd/models/step3vl.cpp
+        ${llamacpp_SOURCE_DIR}/tools/mtmd/models/qwen3a.cpp
         ${llamacpp_SOURCE_DIR}/tools/mtmd/models/hunyuanocr.cpp
         ${llamacpp_SOURCE_DIR}/tools/mtmd/models/deepseekocr.cpp
     )
