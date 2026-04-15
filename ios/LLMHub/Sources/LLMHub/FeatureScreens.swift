@@ -2788,76 +2788,37 @@ struct TranslatorScreen: View {
         translatorLanguageEnglishNames[language.code] ?? language.code
     }
 
-    private func rawTranslateGemmaPrompt(source: TranslatorLanguage?, target: TranslatorLanguage, text: String) -> String {
-        let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    private func buildSystemPrompt(source: TranslatorLanguage?, target: TranslatorLanguage) -> String {
         let targetName = englishName(for: target)
         let targetCode = target.code.replacingOccurrences(of: "_", with: "-")
-        let useGemma4Turns = selectedModel.map(usesGemma4TurnTemplate) ?? true
-        let userTurnStart = useGemma4Turns ? "<|turn>user" : "<start_of_turn>user"
-        let userTurnEnd = useGemma4Turns ? "<turn|>" : "<end_of_turn>"
-        let modelTurnStart = useGemma4Turns ? "<|turn>model" : "<start_of_turn>model"
+        let hasImage = selectedImageURL != nil && enableVision
 
-        let promptBody: String
-        if let source {
-            let sourceName = englishName(for: source)
-            let sourceCode = source.code.replacingOccurrences(of: "_", with: "-")
-            promptBody = """
-            \(userTurnStart)
-            You are a professional \(sourceName) (\(sourceCode)) to \(targetName) (\(targetCode)) translator. Your goal is to accurately convey the meaning and nuances of the original \(sourceName) text while adhering to \(targetName) grammar, vocabulary, and cultural sensitivities.
-            Produce only the \(targetName) translation, without any additional explanations or commentary. Please translate the following \(sourceName) text into \(targetName):
-
-
-            \(trimmedText)\(userTurnEnd)
-            \(modelTurnStart)
-            """
-        } else {
-            promptBody = """
-            \(userTurnStart)
-            You are a professional translator. Detect the source language of the text, then accurately translate it into \(targetName) (\(targetCode)) while preserving meaning and nuance.
-            Produce only the \(targetName) translation, without any additional explanations or commentary. Please translate the following text into \(targetName):
-
-
-            \(trimmedText)\(userTurnEnd)
-            \(modelTurnStart)
-            """
+        if hasImage {
+            if let source {
+                let srcName = englishName(for: source)
+                let srcCode = source.code.replacingOccurrences(of: "_", with: "-")
+                return "You are a professional \(srcName) (\(srcCode)) to \(targetName) (\(targetCode)) translator. Your goal is to accurately convey the meaning and nuances of the original \(srcName) text while adhering to \(targetName) grammar, vocabulary, and cultural sensitivities.\nPlease translate the \(srcName) text in the provided image into \(targetName). Produce only the \(targetName) translation, without any additional explanations, alternatives or commentary. Focus only on the text, do not output where the text is located, surrounding objects or any other explanation about the picture. Ignore symbols, pictogram, and arrows!"
+            } else {
+                return "You are a professional translator. Your goal is to accurately convey the meaning and nuances of the original text while adhering to \(targetName) grammar, vocabulary, and cultural sensitivities.\nPlease translate the text in the provided image into \(targetName). Produce only the \(targetName) translation, without any additional explanations, alternatives or commentary. Focus only on the text, do not output where the text is located, surrounding objects or any other explanation about the picture. Ignore symbols, pictogram, and arrows!"
+            }
         }
-
-        return "__RAW_PROMPT__\n" + promptBody
+        
+        let targetInst = "Produce only the \(targetName) translation, without any additional explanations or commentary. Please translate the following text into \(targetName):"
+        if let source {
+            let srcName = englishName(for: source)
+            let srcCode = source.code.replacingOccurrences(of: "_", with: "-")
+            return "You are a professional \(srcName) (\(srcCode)) to \(targetName) (\(targetCode)) translator. Your goal is to accurately convey the meaning and nuances of the original \(srcName) text while adhering to \(targetName) grammar, vocabulary, and cultural sensitivities. \(targetInst)"
+        } else {
+            return "You are a professional translator. Detect the source language of the text, then accurately translate it into \(targetName) (\(targetCode)) while preserving meaning and nuance. \(targetInst)"
+        }
     }
 
     private func buildPrompt() -> String {
         let trimmedInput = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let source = autoDetectSource ? nil : sourceLanguage
-        let targetCode = targetLanguage.code.replacingOccurrences(of: "_", with: "-")
-        let targetName = englishName(for: targetLanguage)
-        let isTranslateGemma = selectedModel.map(isTranslateGemmaModel) ?? false
-
-        let hasImage = selectedImageURL != nil && enableVision
-
-        if hasImage {
-            let srcPart: String
-            if let source = source {
-                let srcName = englishName(for: source)
-                let srcCode = source.code.replacingOccurrences(of: "_", with: "-")
-                srcPart = "You are a professional \(srcName) (\(srcCode)) to \(targetName) (\(targetCode)) translator. Your goal is to accurately convey the meaning and nuances of the original \(srcName) text while adhering to \(targetName) grammar, vocabulary, and cultural sensitivities.\nPlease translate the \(srcName) text in the provided image into \(targetName). Produce only the \(targetName) translation, without any additional explanations, alternatives or commentary. Focus only on the text, do not output where the text is located, surrounding objects or any other explanation about the picture. Ignore symbols, pictogram, and arrows!"
-            } else {
-                srcPart = "You are a professional translator. Your goal is to accurately convey the meaning and nuances of the original text while adhering to \(targetName) grammar, vocabulary, and cultural sensitivities.\nPlease translate the text in the provided image into \(targetName). Produce only the \(targetName) translation, without any additional explanations, alternatives or commentary. Focus only on the text, do not output where the text is located, surrounding objects or any other explanation about the picture. Ignore symbols, pictogram, and arrows!"
-            }
-            let extra = trimmedInput.isEmpty ? "" : "\n\(trimmedInput)"
-            return srcPart + extra
+        if selectedImageURL != nil && enableVision && trimmedInput.isEmpty {
+            return "Please translate the text in the image."
         }
-
-        if !isTranslateGemma {
-            if let source = source {
-                let sourceName = englishName(for: source)
-                let sourceCode = source.code.replacingOccurrences(of: "_", with: "-")
-                return "You are a professional translator. Translate the following \(sourceName) (\(sourceCode)) text into \(targetName) (\(targetCode)). Preserve meaning and nuance. Respond with only the translated \(targetName) text and no commentary.\n\n\(trimmedInput)"
-            }
-
-            return "You are a professional translator. Detect the source language and translate the following text into \(targetName) (\(targetCode)). Preserve meaning and nuance. Respond with only the translated \(targetName) text and no commentary.\n\n\(trimmedInput)"
-        }
-
-        return rawTranslateGemmaPrompt(source: source, target: targetLanguage, text: trimmedInput)
+        return trimmedInput
     }
 
     private func ensureModelLoaded(force: Bool) async {
@@ -2925,6 +2886,7 @@ struct TranslatorScreen: View {
                 try await llm.generate(
                     prompt: buildPrompt(),
                     imageURL: effectiveImageURL,
+                    systemPrompt: buildSystemPrompt(source: autoDetectSource ? nil : sourceLanguage, target: targetLanguage),
                     maxTokensOverride: 512,
                     stopSequences: [
                         "<turn|>",

@@ -861,6 +861,7 @@ bool LlamaCppTextGeneration::generate_stream(const TextGenerationRequest& reques
         "<|turn>user\n",           // Gemma4 user turn marker
         "<|turn>system\n",         // Gemma4 system turn marker
         "<eos>",                   // text form of EOS (safety net)
+        "<unused",                 // stop on unused tokens (e.g. <unused8>)
     };
 
     // Merge per-request stop sequences with the static ones
