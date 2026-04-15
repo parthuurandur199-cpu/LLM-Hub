@@ -177,6 +177,9 @@ class LlamaCppTextGeneration {
     std::string apply_chat_template(const std::vector<std::pair<std::string, std::string>>& messages,
                                     const std::string& system_prompt, bool add_assistant_token);
 
+    /// Build once per loaded model: ban Gemma placeholder tokens (e.g. `<unused25>`) via logit bias.
+    void rebuild_gemma4_logit_bias_cache();
+
     LlamaCppBackend* backend_;
     llama_model* model_ = nullptr;
     llama_context* context_ = nullptr;
@@ -194,6 +197,10 @@ class LlamaCppTextGeneration {
     int batch_size_ = 0;
 
     std::vector<LoraAdapterEntry> lora_adapters_;
+
+    /// Cached `llama_logit_bias` entries for Gemma 4 (built after `context_` exists).
+    std::vector<llama_logit_bias> gemma4_logit_bias_cache_;
+    bool gemma4_logit_bias_ready_ = false;
 
     mutable std::mutex mutex_;
 };

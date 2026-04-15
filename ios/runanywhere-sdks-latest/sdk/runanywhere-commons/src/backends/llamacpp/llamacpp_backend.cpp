@@ -125,29 +125,6 @@ static std::string build_gemma4_hf_style_prompt(const std::vector<llama_chat_mes
     return out;
 }
 
-/// Strong negative bias for Gemma placeholder / reserved vocab entries (e.g. `<unused25>`).
-static std::vector<llama_logit_bias> gemma4_build_placeholder_logit_bias(const llama_vocab* vocab) {
-    std::vector<llama_logit_bias> biases;
-    if (!vocab) {
-        return biases;
-    }
-    const int32_t n = llama_vocab_n_tokens(vocab);
-    biases.reserve(128);
-    for (int32_t i = 0; i < n; ++i) {
-        const llama_token t = static_cast<llama_token>(i);
-        const llama_token_attr attr = llama_vocab_get_attr(vocab, t);
-        if ((attr & LLAMA_TOKEN_ATTR_UNUSED) != 0) {
-            biases.push_back({t, -120.0f});
-            continue;
-        }
-        const char* text = llama_vocab_get_text(vocab, t);
-        if (text && std::strncmp(text, "<unused", 7) == 0) {
-            biases.push_back({t, -120.0f});
-        }
-    }
-    return biases;
-}
-
 static const std::vector<std::string>& gemma_leading_artifacts() {
     static const std::vector<std::string> artifacts = {
         "<bos>",
@@ -345,6 +322,55 @@ bool LlamaCppTextGeneration::is_ready() const {
     return model_loaded_ && model_ != nullptr && context_ != nullptr;
 }
 
+void LlamaCppTextGeneration::rebuild_gemma4_logit_bias_cache() {
+    gemma4_logit_bias_cache_.clear();
+    gemma4_logit_bias_ready_ = false;
+
+    if (!model_ || !context_) {
+        return;
+    }
+    if (!model_arch_is_gemma4(model_)) {
+        return;
+    }
+
+    const llama_vocab* vocab = llama_model_get_vocab(model_);
+    const int32_t n = llama_vocab_n_tokens(vocab);
+    gemma4_logit_bias_cache_.reserve(512);
+
+    // SentencePiece "unused" slots are usually low ids but are not always flagged in GGUF metadata.
+    static constexpr int32_t kPieceScanLimit = 16384;
+
+    for (int32_t i = 0; i < n; ++i) {
+        const llama_token t = static_cast<llama_token>(i);
+        bool ban = false;
+
+        const llama_token_attr attr = llama_vocab_get_attr(vocab, t);
+        if ((attr & LLAMA_TOKEN_ATTR_UNUSED) != 0) {
+            ban = true;
+        }
+
+        const char* text = llama_vocab_get_text(vocab, t);
+        if (!ban && text && std::strstr(text, "unused") != nullptr) {
+            ban = true;
+        }
+
+        if (!ban && i < kPieceScanLimit) {
+            const std::string piece = common_token_to_piece(context_, t);
+            if (piece.find("<unused") != std::string::npos) {
+                ban = true;
+            }
+        }
+
+        if (ban) {
+            gemma4_logit_bias_cache_.push_back({t, -10000.0f});
+        }
+    }
+
+    gemma4_logit_bias_ready_ = true;
+    LOGI("Gemma4 logit bias cache: %zu vocab entries masked (low-id piece scan cap=%d)",
+         gemma4_logit_bias_cache_.size(), kPieceScanLimit);
+}
+
 bool LlamaCppTextGeneration::load_model(const std::string& model_path,
                                         const nlohmann::json& config) {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -532,6 +558,8 @@ bool LlamaCppTextGeneration::load_model(const std::string& model_path,
     sampler_ = llama_sampler_chain_init(sparams);
     llama_sampler_chain_add(sampler_, llama_sampler_init_greedy());
 
+    rebuild_gemma4_logit_bias_cache();
+
     model_loaded_ = true;
     LOGI("Model loaded successfully: context_size=%d", context_size_);
 
@@ -548,6 +576,9 @@ bool LlamaCppTextGeneration::unload_model_internal() {
     }
 
     LOGI("Unloading model");
+
+    gemma4_logit_bias_cache_.clear();
+    gemma4_logit_bias_ready_ = false;
 
     // Clear LoRA adapters from context before freeing
     // (adapter memory is freed automatically with the model per llama.cpp API)
@@ -915,17 +946,13 @@ bool LlamaCppTextGeneration::generate_stream(const TextGenerationRequest& reques
     sampler_ = llama_sampler_chain_init(sparams);
 
     const auto vocab = llama_model_get_vocab(model_);
-    std::vector<llama_logit_bias> gemma4_logit_bias_storage;
-    if (model_arch_is_gemma4(model_)) {
-        gemma4_logit_bias_storage = gemma4_build_placeholder_logit_bias(vocab);
-        if (!gemma4_logit_bias_storage.empty()) {
-            const int32_t n_vocab = llama_vocab_n_tokens(vocab);
-            llama_sampler_chain_add(sampler_,
-                                    llama_sampler_init_logit_bias(
-                                        n_vocab,
-                                        static_cast<int32_t>(gemma4_logit_bias_storage.size()),
-                                        gemma4_logit_bias_storage.data()));
-        }
+    if (model_arch_is_gemma4(model_) && gemma4_logit_bias_ready_ && !gemma4_logit_bias_cache_.empty()) {
+        const int32_t n_vocab = llama_vocab_n_tokens(vocab);
+        llama_sampler_chain_add(sampler_,
+                                llama_sampler_init_logit_bias(
+                                    n_vocab,
+                                    static_cast<int32_t>(gemma4_logit_bias_cache_.size()),
+                                    gemma4_logit_bias_cache_.data()));
     }
 
     if (request.temperature > 0.0f) {
@@ -1302,22 +1329,18 @@ TextGenerationResult LlamaCppTextGeneration::generate_from_context(const TextGen
 
     llama_sampler* sampler = nullptr;
     const auto vocab = llama_model_get_vocab(model_);
-    std::vector<llama_logit_bias> gemma4_logit_bias_storage_fc;
     {
         auto sparams = llama_sampler_chain_default_params();
         sparams.no_perf = true;
         sampler = llama_sampler_chain_init(sparams);
 
-        if (gemma4_fc) {
-            gemma4_logit_bias_storage_fc = gemma4_build_placeholder_logit_bias(vocab);
-            if (!gemma4_logit_bias_storage_fc.empty()) {
-                const int32_t n_vocab = llama_vocab_n_tokens(vocab);
-                llama_sampler_chain_add(sampler,
-                                        llama_sampler_init_logit_bias(
-                                            n_vocab,
-                                            static_cast<int32_t>(gemma4_logit_bias_storage_fc.size()),
-                                            gemma4_logit_bias_storage_fc.data()));
-            }
+        if (gemma4_fc && gemma4_logit_bias_ready_ && !gemma4_logit_bias_cache_.empty()) {
+            const int32_t n_vocab = llama_vocab_n_tokens(vocab);
+            llama_sampler_chain_add(sampler,
+                                    llama_sampler_init_logit_bias(
+                                        n_vocab,
+                                        static_cast<int32_t>(gemma4_logit_bias_cache_.size()),
+                                        gemma4_logit_bias_cache_.data()));
         }
 
         if (request.temperature > 0.0f) {
@@ -1605,6 +1628,8 @@ bool LlamaCppTextGeneration::recreate_context() {
     sparams.no_perf = true;
     sampler_ = llama_sampler_chain_init(sparams);
     llama_sampler_chain_add(sampler_, llama_sampler_init_greedy());
+
+    rebuild_gemma4_logit_bias_cache();
 
     LOGI("Context recreated successfully");
     return true;
