@@ -278,28 +278,28 @@ func binaryTargets() -> [Target] {
         var targets: [Target] = [
             .binaryTarget(
                 name: "RACommonsBinary",
-                url: "https://github.com/timmyy123/LLM-Hub/releases/download/ios-sdk-v\(sdkVersion)-patched-v2/RACommons-v\(sdkVersion)-r2.zip?v=v8",
-                checksum: "81ffce3706ee014bb89cc8e4b6c6ae0ff8060c84bf16d321101b2c9d9e7c23f9"
+                url: "https://github.com/timmyy123/LLM-Hub/releases/download/ios-sdk-v\(sdkVersion)-patched-v2/RACommons-v\(sdkVersion)-r2.zip?v=v9",
+                checksum: "ea98956f422da1640c64d08c261cd089fed673147d00ccc80b8c76c334b1ab3f"
             ),
             .binaryTarget(
                 name: "RABackendLlamaCPPBinary",
-                url: "https://github.com/timmyy123/LLM-Hub/releases/download/ios-sdk-v\(sdkVersion)-patched-v2/RABackendLLAMACPP-v\(sdkVersion).zip?v=v8",
+                url: "https://github.com/timmyy123/LLM-Hub/releases/download/ios-sdk-v\(sdkVersion)-patched-v2/RABackendLLAMACPP-v\(sdkVersion).zip?v=v9",
                 checksum: "d587e4853b95bbaa3073d957af1526ff15a18a57c62cdbd1411dcb4af4d19771"
             ),
             .binaryTarget(
                 name: "RABackendONNXBinary",
-                url: "https://github.com/timmyy123/LLM-Hub/releases/download/ios-sdk-v\(sdkVersion)-patched-v2/RABackendONNX-v\(sdkVersion)-r2.zip?v=v8",
-                checksum: "4c140956029da06d0485c70be068e2c1e583c807affdae0a08a9e0e9f8975412"
+                url: "https://github.com/timmyy123/LLM-Hub/releases/download/ios-sdk-v\(sdkVersion)-patched-v2/RABackendONNX-v\(sdkVersion)-r2.zip?v=v9",
+                checksum: "1262db00a118631babe80f776f38071805e8cda85050f00f884f99ec1878a76e"
             ),
             .binaryTarget(
                 name: "ONNXRuntimeiOSBinary",
-                url: "https://github.com/timmyy123/LLM-Hub/releases/download/ios-sdk-v\(sdkVersion)-patched-v2/onnxruntime-ios-v\(sdkVersion).zip?v=v8",
-                checksum: "1eef0d0521c0aafadd05085d88a523606e205bb4e6845c77dd777136cddfc2be"
+                url: "https://github.com/timmyy123/LLM-Hub/releases/download/ios-sdk-v\(sdkVersion)-patched-v2/onnxruntime-ios-v\(sdkVersion).zip?v=v9",
+                checksum: "83f44854391bebb265508a7008a113e6b9339695d663f3c80831daeebad3c6a2"
             ),
             .binaryTarget(
                 name: "ONNXRuntimemacOSBinary",
-                url: "https://github.com/timmyy123/LLM-Hub/releases/download/ios-sdk-v\(sdkVersion)-patched-v2/onnxruntime-macos-v\(sdkVersion).zip?v=v8",
-                checksum: "ec552aedae1e7a159258c803364e70bb4f01d37a769c815f6752e8cda0420720"
+                url: "https://github.com/timmyy123/LLM-Hub/releases/download/ios-sdk-v\(sdkVersion)-patched-v2/onnxruntime-macos-v\(sdkVersion).zip?v=v9",
+                checksum: "cefa7813cccc98fe88accfd3d1c013bf6430f7405b3fcf835e18588acfc47b6e"
             ),
         ]
 
