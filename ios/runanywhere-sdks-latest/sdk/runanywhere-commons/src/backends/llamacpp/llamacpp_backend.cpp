@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cctype>
 #include <cstring>
 #include <fstream>
 #include <string>
@@ -60,6 +61,91 @@ struct Utf8State {
 
 static bool starts_with(const std::string& text, const std::string& prefix) {
     return text.size() >= prefix.size() && text.compare(0, prefix.size(), prefix) == 0;
+}
+
+/// Trim ASCII/UTF-8 leading and trailing whitespace (Gemma chat_template uses `trim` on contents).
+static std::string trim_message_content(const std::string& s) {
+    size_t start = 0;
+    while (start < s.size() && std::isspace(static_cast<unsigned char>(s[start]))) {
+        start++;
+    }
+    size_t end = s.size();
+    while (end > start && std::isspace(static_cast<unsigned char>(s[end - 1]))) {
+        end--;
+    }
+    return s.substr(start, end - start);
+}
+
+static bool model_arch_is_gemma4(const llama_model* model) {
+    if (!model) {
+        return false;
+    }
+    char arch_buf[96];
+    int32_t arch_len =
+        llama_model_meta_val_str(model, "general.architecture", arch_buf, sizeof(arch_buf));
+    if (arch_len <= 0) {
+        return false;
+    }
+    if (arch_len >= (int32_t)sizeof(arch_buf)) {
+        arch_len = (int32_t)sizeof(arch_buf) - 1;
+    }
+    std::string arch(arch_buf, arch_buf + static_cast<size_t>(arch_len));
+    for (auto& c : arch) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    return arch.find("gemma4") != std::string::npos;
+}
+
+/**
+ * Build Gemma 4 text prompts aligned with llama.cpp's interleaved HF template
+ * (`google-gemma-4-*-interleaved.jinja`): <|turn>{role}\\n, trimmed content, ` \\n` after each turn,
+ * then for generation `<|turn>model\\n` + `<|channel>thought\\n ` (trailing space; no `<channel|>`
+ * before sampling — that marker ends a channel when parsing prior model output, not the empty
+ * thought prefix).
+ *
+ * BOS is not embedded here; tokenization uses add_special=true so the vocab BOS is added once.
+ */
+static std::string build_gemma4_hf_style_prompt(const std::vector<llama_chat_message>& chat_messages,
+                                                bool add_assistant_token) {
+    std::string out;
+
+    for (const auto& msg : chat_messages) {
+        std::string role(msg.role ? msg.role : "");
+        std::string gemma_role = (role == "assistant") ? "model" : role;
+        out += "<|turn>" + gemma_role + "\n";
+        out += trim_message_content(msg.content ? msg.content : "");
+        out += " \n";
+    }
+
+    if (add_assistant_token) {
+        out += "<|turn>model\n";
+        out += "<|channel>thought\n ";
+    }
+
+    return out;
+}
+
+/// Strong negative bias for Gemma placeholder / reserved vocab entries (e.g. `<unused25>`).
+static std::vector<llama_logit_bias> gemma4_build_placeholder_logit_bias(const llama_vocab* vocab) {
+    std::vector<llama_logit_bias> biases;
+    if (!vocab) {
+        return biases;
+    }
+    const int32_t n = llama_vocab_n_tokens(vocab);
+    biases.reserve(128);
+    for (int32_t i = 0; i < n; ++i) {
+        const llama_token t = static_cast<llama_token>(i);
+        const llama_token_attr attr = llama_vocab_get_attr(vocab, t);
+        if ((attr & LLAMA_TOKEN_ATTR_UNUSED) != 0) {
+            biases.push_back({t, -120.0f});
+            continue;
+        }
+        const char* text = llama_vocab_get_text(vocab, t);
+        if (text && std::strncmp(text, "<unused", 7) == 0) {
+            biases.push_back({t, -120.0f});
+        }
+    }
+    return biases;
 }
 
 static const std::vector<std::string>& gemma_leading_artifacts() {
@@ -555,32 +641,18 @@ std::string LlamaCppTextGeneration::apply_chat_template(
         model_arch.clear();
     }
 
+    if (model_arch_is_gemma4(model_)) {
+        // llama_chat_apply_template() only supports built-in names / heuristics — it cannot execute
+        // the full Gemma 4 Jinja `tokenizer.chat_template` blob from GGUF (always UNKNOWN / -1).
+        LOGI("Gemma4 arch=%s — using HF-aligned <|turn> manual formatter (skip llama_chat_apply_template on embedded Jinja)",
+             model_arch.c_str());
+        return build_gemma4_hf_style_prompt(chat_messages, add_assistant_token);
+    }
+
     // Gemma 1/2/3: hand-built <start_of_turn> is stable and avoids brittle Jinja on older GGUFs.
-    // Gemma 4: do NOT short-circuit here — it must use tokenizer.chat_template from the GGUF
-    // or llama.cpp's built-in "gemma" template. A manually concatenated <|turn> string often
-    // does not match how the tokenizer splits special tokens, which surfaces as <unused24/25>
-    // garbage in generation (same symptom as missing --chat-template gemma in llama-cli).
     {
-        const bool is_gemma  = !model_arch.empty() && model_arch.find("gemma") != std::string::npos;
-        const bool is_gemma4 = !model_arch.empty() && model_arch.find("gemma4") != std::string::npos;
-        if (is_gemma4) {
-            // Gemma4: use explicit official turn format (Google docs / llama.cpp gemma template).
-            // This path intentionally avoids Jinja parsing and any built-in fallback behavior.
-            std::string gemma_prompt;
-            for (const auto& msg : chat_messages) {
-                std::string role(msg.role ? msg.role : "");
-                std::string gemma_role = (role == "assistant") ? "model" : role;
-                gemma_prompt += "<|turn>" + gemma_role + "\n";
-                gemma_prompt += std::string(msg.content ? msg.content : "") + "<turn|>\n";
-            }
-            if (add_assistant_token) {
-                gemma_prompt += "<|turn>model\n";
-            }
-            LOGI("Gemma4 arch=%s detected — using strict <|turn>|<turn|> template (no fallback)",
-                 model_arch.c_str());
-            return gemma_prompt;
-        }
-        if (is_gemma && !is_gemma4) {
+        const bool is_gemma = !model_arch.empty() && model_arch.find("gemma") != std::string::npos;
+        if (is_gemma) {
             LOGI("Gemma arch=%s detected — using hardcoded legacy <start_of_turn> template (skip Jinja)",
                  model_arch.c_str());
             std::string gemma_prompt;
@@ -597,10 +669,8 @@ std::string LlamaCppTextGeneration::apply_chat_template(
         }
     }
 
-    const bool is_gemma4 = !model_arch.empty() && model_arch.find("gemma4") != std::string::npos;
-
     // Extract chat template from model metadata. Start with a large buffer because
-    // Gemma 4 and other modern models have Jinja templates that easily exceed 2048 bytes.
+    // some models ship large `tokenizer.chat_template` strings in GGUF metadata.
     std::string model_template;
     model_template.resize(1024 * 64); // 64 KB initial buffer
     int32_t template_len = llama_model_meta_val_str(model_, "tokenizer.chat_template",
@@ -613,11 +683,6 @@ std::string LlamaCppTextGeneration::apply_chat_template(
                                                 model_template.data(), model_template.size());
     }
 
-    const std::string gemma4_template_path =
-        "models/templates/google-gemma-4-31B-it.jinja";
-    const std::string gemma4_interleaved_template_path =
-        "models/templates/google-gemma-4-31B-it-interleaved.jinja";
-    std::string file_template;
     const char* tmpl_to_use = nullptr;
     if (template_len > 0) {
         model_template.resize(template_len);
@@ -625,24 +690,6 @@ std::string LlamaCppTextGeneration::apply_chat_template(
         tmpl_to_use = model_template.c_str();
     } else {
         LOGI("No chat template found in model metadata (len=%d), will use arch-based fallback", template_len);
-        // Gemma 4 without embedded Jinja: auto-detect (nullptr) is often wrong and yields <unused*> spam.
-        if (!model_arch.empty() && model_arch.find("gemma4") != std::string::npos) {
-            tmpl_to_use = "gemma";
-            LOGI("Gemma4 with no tokenizer.chat_template — using built-in 'gemma' for first apply");
-        }
-    }
-
-    // Some Gemma4 GGUFs ship Jinja that minja cannot parse. Prefer upstream file template
-    // before falling back to built-in shorthand.
-    if (is_gemma4) {
-        file_template = load_text_file(gemma4_interleaved_template_path);
-        if (file_template.empty()) {
-            file_template = load_text_file(gemma4_template_path);
-        }
-        if (!file_template.empty()) {
-            tmpl_to_use = file_template.c_str();
-            LOGI("Gemma4 override: using template file, length: %zu", file_template.size());
-        }
     }
 
     std::string formatted;
@@ -666,48 +713,14 @@ std::string LlamaCppTextGeneration::apply_chat_template(
     }
 
     if (result < 0) {
-        if (is_gemma4) {
-            // Last-resort guard for Gemma4 GGUFs whose embedded Jinja cannot be parsed by
-            // minja in certain llama.cpp snapshots. Using special-token templates in this
-            // state can degenerate into <unusedXX> spam, so fall back to plain text format.
-            LOGI("Gemma4 template parse failed (result=%d), using plain-text chat fallback", result);
-            std::string fallback;
-            if (!system_prompt.empty()) {
-                fallback += "System: " + system_prompt + "\n";
-            }
-            for (const auto& msg : chat_messages) {
-                std::string role(msg.role ? msg.role : "");
-                if (role == "assistant" || role == "model") {
-                    fallback += "Assistant: ";
-                } else if (role == "system") {
-                    fallback += "System: ";
-                } else {
-                    fallback += "User: ";
-                }
-                fallback += std::string(msg.content ? msg.content : "") + "\n";
-            }
-            if (add_assistant_token) {
-                fallback += "Assistant: ";
-            }
-            return fallback;
-        }
-
         // The model's embedded Jinja template failed. Use an architecture-aware built-in
-        // template: Gemma 4 needs llama.cpp's "gemma" builtin (not "gemma3") or output degrades
-        // to <unused*> control-token spam. Older Gemma use "gemma3". Others fall back to nullptr
-        // (chatml). Passing nullptr produces <|im_start|> tokens which Gemma ignores.
+        // template for legacy Gemma (non-Gemma4). Others fall back to nullptr (chatml).
         const char* fallback_tmpl = nullptr;
-        if (!model_arch.empty() &&
-            (model_arch.find("gemma") != std::string::npos)) {
-            if (model_arch.find("gemma4") != std::string::npos) {
-                fallback_tmpl = "gemma";
-                LOGI("Model template failed (result=%d), using 'gemma' built-in template for arch=%s",
-                     result, model_arch.c_str());
-            } else {
-                fallback_tmpl = "gemma3";
-                LOGI("Model template failed (result=%d), using 'gemma3' built-in template for arch=%s",
-                     result, model_arch.c_str());
-            }
+        if (!model_arch.empty() && model_arch.find("gemma") != std::string::npos &&
+            model_arch.find("gemma4") == std::string::npos) {
+            fallback_tmpl = "gemma3";
+            LOGI("Model template failed (result=%d), using 'gemma3' built-in template for arch=%s",
+                 result, model_arch.c_str());
         } else {
             LOGI("Model template failed (result=%d), retrying with llama.cpp auto-detect template (arch=%s)",
                  result, model_arch.c_str());
@@ -720,23 +733,7 @@ std::string LlamaCppTextGeneration::apply_chat_template(
         }
         if (result < 0) {
             // Last-resort string templates when llama_chat_apply_template cannot run.
-            const bool is_gemma4 = !model_arch.empty() && model_arch.find("gemma4") != std::string::npos;
             bool is_gemma = !model_arch.empty() && model_arch.find("gemma") != std::string::npos;
-            if (is_gemma4) {
-                LOGI("All templates failed for Gemma4 arch=%s, building <|turn> prompt directly",
-                     model_arch.c_str());
-                std::string gemma_prompt;
-                for (const auto& msg : chat_messages) {
-                    std::string role(msg.role);
-                    std::string gemma_role = (role == "assistant") ? "model" : role;
-                    gemma_prompt += "<|turn>" + gemma_role + "\n";
-                    gemma_prompt += std::string(msg.content) + "<turn|>\n";
-                }
-                if (add_assistant_token) {
-                    gemma_prompt += "<|turn>model\n";
-                }
-                return gemma_prompt;
-            }
             if (is_gemma) {
                 LOGI("All templates failed for Gemma arch=%s, building <start_of_turn> prompt directly",
                      model_arch.c_str());
@@ -917,6 +914,20 @@ bool LlamaCppTextGeneration::generate_stream(const TextGenerationRequest& reques
     sparams.no_perf = true;
     sampler_ = llama_sampler_chain_init(sparams);
 
+    const auto vocab = llama_model_get_vocab(model_);
+    std::vector<llama_logit_bias> gemma4_logit_bias_storage;
+    if (model_arch_is_gemma4(model_)) {
+        gemma4_logit_bias_storage = gemma4_build_placeholder_logit_bias(vocab);
+        if (!gemma4_logit_bias_storage.empty()) {
+            const int32_t n_vocab = llama_vocab_n_tokens(vocab);
+            llama_sampler_chain_add(sampler_,
+                                    llama_sampler_init_logit_bias(
+                                        n_vocab,
+                                        static_cast<int32_t>(gemma4_logit_bias_storage.size()),
+                                        gemma4_logit_bias_storage.data()));
+        }
+    }
+
     if (request.temperature > 0.0f) {
         // Use default penalties (1.2f repetition) or request params if added later
         llama_sampler_chain_add(sampler_,
@@ -941,12 +952,11 @@ bool LlamaCppTextGeneration::generate_stream(const TextGenerationRequest& reques
          request.max_tokens, effective_max_tokens, request.repetition_penalty,
          request.system_prompt.length());
 
-    const auto vocab = llama_model_get_vocab(model_);
-
     static const std::vector<std::string> STOP_SEQUENCES = {
         "<|im_end|>", "<|eot_id|>", "</s>", "<|end|>", "<|endoftext|>",
         "\n\nUser:", "\n\nHuman:",
         "<turn|>",                  // Gemma4 end-of-turn marker
+        "<channel|>",               // Gemma4 end-of-channel marker
         "<|tool_response>",         // Gemma4 tool handoff stop marker
         "<end_of_turn>",      // Gemma3/Gemma4 end-of-turn marker
         "<start_of_turn>user\n",   // stop if model hallucinates a user turn
@@ -982,6 +992,7 @@ bool LlamaCppTextGeneration::generate_stream(const TextGenerationRequest& reques
     int n_cur = batch.n_tokens;
     int tokens_generated = 0;
     bool stop_sequence_hit = false;
+    int debug_logged_tokens = 0;
 
     while (tokens_generated < effective_max_tokens && !cancel_requested_.load()) {
         const llama_token new_token_id = llama_sampler_sample(sampler_, context_, -1);
@@ -995,6 +1006,11 @@ bool LlamaCppTextGeneration::generate_stream(const TextGenerationRequest& reques
 
         const std::string new_token_chars =
             common_token_to_piece(context_, new_token_id);
+        if (debug_logged_tokens < 16) {
+            LOGI("DEBUG sampled token[%d]: id=%d piece='%s'",
+                 debug_logged_tokens, (int)new_token_id, new_token_chars.c_str());
+            debug_logged_tokens++;
+        }
 
         partial_utf8_buffer.append(new_token_chars);
 
@@ -1038,17 +1054,20 @@ bool LlamaCppTextGeneration::generate_stream(const TextGenerationRequest& reques
 
             if (do_stop_check) {
                 size_t found_stop_pos = std::string::npos;
+                std::string found_stop_seq;
                 for (const auto& stop_seq : effective_stop_sequences) {
                     size_t pos = stop_window.find(stop_seq);
                     if (pos != std::string::npos) {
                         if (found_stop_pos == std::string::npos || pos < found_stop_pos) {
                             found_stop_pos = pos;
+                            found_stop_seq = stop_seq;
                         }
                     }
                 }
 
                 if (found_stop_pos != std::string::npos) {
-                    LOGI("Stop sequence detected");
+                    LOGI("Stop sequence detected: '%s' at pos=%zu (window_len=%zu)",
+                         found_stop_seq.c_str(), found_stop_pos, stop_window.size());
                     stop_sequence_hit = true;
                     if (found_stop_pos > 0) {
                         std::string chunk = stop_window.substr(0, found_stop_pos);
@@ -1235,7 +1254,9 @@ TextGenerationResult LlamaCppTextGeneration::generate_from_context(const TextGen
 
     const std::string prompt = build_prompt(request);
 
-    const auto tokens = common_tokenize(context_, prompt, false, false);
+    const bool gemma4_fc = model_arch_is_gemma4(model_);
+    const auto tokens = gemma4_fc ? common_tokenize(context_, prompt, true, true)
+                                  : common_tokenize(context_, prompt, false, false);
     const int n_prompt = static_cast<int>(tokens.size());
 
     if (n_prompt <= 0) {
@@ -1280,10 +1301,24 @@ TextGenerationResult LlamaCppTextGeneration::generate_from_context(const TextGen
     }
 
     llama_sampler* sampler = nullptr;
+    const auto vocab = llama_model_get_vocab(model_);
+    std::vector<llama_logit_bias> gemma4_logit_bias_storage_fc;
     {
         auto sparams = llama_sampler_chain_default_params();
         sparams.no_perf = true;
         sampler = llama_sampler_chain_init(sparams);
+
+        if (gemma4_fc) {
+            gemma4_logit_bias_storage_fc = gemma4_build_placeholder_logit_bias(vocab);
+            if (!gemma4_logit_bias_storage_fc.empty()) {
+                const int32_t n_vocab = llama_vocab_n_tokens(vocab);
+                llama_sampler_chain_add(sampler,
+                                        llama_sampler_init_logit_bias(
+                                            n_vocab,
+                                            static_cast<int32_t>(gemma4_logit_bias_storage_fc.size()),
+                                            gemma4_logit_bias_storage_fc.data()));
+            }
+        }
 
         if (request.temperature > 0.0f) {
             llama_sampler_chain_add(sampler,
@@ -1299,12 +1334,11 @@ TextGenerationResult LlamaCppTextGeneration::generate_from_context(const TextGen
         }
     }
 
-    const auto vocab = llama_model_get_vocab(model_);
-
     static const std::vector<std::string> STOP_SEQUENCES = {
         "<|im_end|>", "<|eot_id|>", "</s>", "<|end|>", "<|endoftext|>",
         "\n\nUser:", "\n\nHuman:",
         "<turn|>",                  // Gemma4 end-of-turn marker
+        "<channel|>",               // Gemma4 end-of-channel marker
         "<|tool_response>",         // Gemma4 tool handoff stop marker
         "<end_of_turn>",      // Gemma3/Gemma4 end-of-turn marker
         "<start_of_turn>user\n",   // stop if model hallucinates a user turn
