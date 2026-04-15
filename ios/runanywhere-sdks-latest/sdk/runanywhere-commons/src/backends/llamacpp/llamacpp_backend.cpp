@@ -63,6 +63,8 @@ static const std::vector<std::string>& gemma_leading_artifacts() {
         "<start_of_turn>model\r\n",
         "<start_of_turn>model\n",
         "<start_of_turn>model",
+        "<|unused",
+        "<unused",
     };
     return artifacts;
 }
@@ -861,7 +863,6 @@ bool LlamaCppTextGeneration::generate_stream(const TextGenerationRequest& reques
         "<|turn>user\n",           // Gemma4 user turn marker
         "<|turn>system\n",         // Gemma4 system turn marker
         "<eos>",                   // text form of EOS (safety net)
-        "<unused",                 // stop on unused tokens (e.g. <unused8>)
     };
 
     // Merge per-request stop sequences with the static ones
@@ -890,6 +891,8 @@ bool LlamaCppTextGeneration::generate_stream(const TextGenerationRequest& reques
     int n_cur = batch.n_tokens;
     int tokens_generated = 0;
     bool stop_sequence_hit = false;
+    int consecutive_artifact_count = 0;
+    const int MAX_CONSECUTIVE_ARTIFACTS = 8;
 
     while (tokens_generated < effective_max_tokens && !cancel_requested_.load()) {
         const llama_token new_token_id = llama_sampler_sample(sampler_, context_, -1);
@@ -904,10 +907,32 @@ bool LlamaCppTextGeneration::generate_stream(const TextGenerationRequest& reques
         const std::string new_token_chars =
             common_token_to_piece(context_, new_token_id);
 
-        partial_utf8_buffer.append(new_token_chars);
-
         Utf8State scanner_state;
         size_t valid_upto = 0;
+
+        // Filter out "unused" or "channel" tokens that leak from Gemma 4
+        // We still decode them to keep KV cache consistent, but don't append to output.
+        bool is_artifact = (new_token_chars.find("<unused") != std::string::npos ||
+                           new_token_chars.find("<|unused") != std::string::npos ||
+                           new_token_chars.find("<|channel") != std::string::npos ||
+                           new_token_chars.find("<channel|") != std::string::npos ||
+                           new_token_chars.find("<|think|>") != std::string::npos);
+
+        if (is_artifact) {
+            consecutive_artifact_count++;
+            if (consecutive_artifact_count >= MAX_CONSECUTIVE_ARTIFACTS) {
+                LOGI("WARNING: Too many consecutive artifacts (%d), stopping generation.", consecutive_artifact_count);
+                break;
+            }
+        } else {
+            consecutive_artifact_count = 0;
+            partial_utf8_buffer.append(new_token_chars);
+        }
+
+        if (is_artifact) {
+            // Skip processing for artifacts, jump straight to decoding
+            goto decode_step;
+        }
         for (size_t i = 0; i < partial_utf8_buffer.size(); ++i) {
             scanner_state.process(static_cast<uint8_t>(partial_utf8_buffer[i]));
             if (scanner_state.state == 0) {
@@ -984,6 +1009,7 @@ bool LlamaCppTextGeneration::generate_stream(const TextGenerationRequest& reques
             }
         }
 
+    decode_step:
         batch.n_tokens = 0;
         common_batch_add(batch, new_token_id, n_cur, {0}, true);
 
