@@ -892,7 +892,13 @@ bool LlamaCppTextGeneration::generate_stream(const TextGenerationRequest& reques
     int tokens_generated = 0;
     bool stop_sequence_hit = false;
     int consecutive_artifact_count = 0;
-    const int MAX_CONSECUTIVE_ARTIFACTS = 8;
+    int total_artifact_count = 0;
+    bool has_produced_real_content = false;
+    // Before any real content, allow a generous warmup budget (Gemma 4 at low
+    // quantizations can emit dozens of unused tokens before producing text).
+    // After real content has started, a tight limit catches infinite loops.
+    const int MAX_WARMUP_ARTIFACTS = 64;
+    const int MAX_CONSECUTIVE_ARTIFACTS_AFTER_CONTENT = 12;
 
     while (tokens_generated < effective_max_tokens && !cancel_requested_.load()) {
         const llama_token new_token_id = llama_sampler_sample(sampler_, context_, -1);
@@ -920,12 +926,19 @@ bool LlamaCppTextGeneration::generate_stream(const TextGenerationRequest& reques
 
         if (is_artifact) {
             consecutive_artifact_count++;
-            if (consecutive_artifact_count >= MAX_CONSECUTIVE_ARTIFACTS) {
-                LOGI("WARNING: Too many consecutive artifacts (%d), stopping generation.", consecutive_artifact_count);
+            total_artifact_count++;
+            // Two-phase limit: generous before real content, tight after
+            int limit = has_produced_real_content
+                ? MAX_CONSECUTIVE_ARTIFACTS_AFTER_CONTENT
+                : MAX_WARMUP_ARTIFACTS;
+            if (consecutive_artifact_count >= limit) {
+                LOGI("Too many consecutive artifacts (%d, total=%d, has_content=%d), stopping.",
+                     consecutive_artifact_count, total_artifact_count, (int)has_produced_real_content);
                 break;
             }
         } else {
             consecutive_artifact_count = 0;
+            has_produced_real_content = true;
             partial_utf8_buffer.append(new_token_chars);
         }
 

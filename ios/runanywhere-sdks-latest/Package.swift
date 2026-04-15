@@ -278,13 +278,13 @@ func binaryTargets() -> [Target] {
         var targets: [Target] = [
             .binaryTarget(
                 name: "RACommonsBinary",
-                url: "https://github.com/timmyy123/LLM-Hub/releases/download/ios-sdk-v\(sdkVersion)-patched-v2/RACommons-v\(sdkVersion).zip?v=v3",
-                checksum: "c6b36809575f33bb729c8964275b7f1c3fcf5a9215d02a8161739e2fb79d1a66"
+                url: "https://github.com/timmyy123/LLM-Hub/releases/download/ios-sdk-v\(sdkVersion)-patched-v2/RACommons-v\(sdkVersion).zip?v=v4",
+                checksum: "f2ac43af18cdc194535d80ff73fcce746093a2b4d20e86992a8f5cae27e8164d"
             ),
             .binaryTarget(
                 name: "RABackendLlamaCPPBinary",
-                url: "https://github.com/timmyy123/LLM-Hub/releases/download/ios-sdk-v\(sdkVersion)-patched-v2/RABackendLLAMACPP-v\(sdkVersion).zip?v=v3",
-                checksum: "44e1109636f8d8a1fa8ee45558a160f6b1180dccb5e7baabe82ba7cdd88899f7"
+                url: "https://github.com/timmyy123/LLM-Hub/releases/download/ios-sdk-v\(sdkVersion)-patched-v2/RABackendLLAMACPP-v\(sdkVersion).zip?v=v4",
+                checksum: "d587e4853b95bbaa3073d957af1526ff15a18a57c62cdbd1411dcb4af4d19771"
             ),
             .binaryTarget(
                 name: "RABackendONNXBinary",
