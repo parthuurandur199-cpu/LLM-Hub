@@ -2328,6 +2328,8 @@ struct ChatScreen: View {
                         Text(vm.selectedModelName)
                             .font(.caption.bold())
                             .foregroundColor(.white)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
                         Image(systemName: "chevron.down")
                             .font(.system(size: 8, weight: .bold))
                             .foregroundColor(.white.opacity(0.78))
@@ -2906,6 +2908,8 @@ struct ChatScreen: View {
             } else {
                 Text(vm.selectedModelName)
                     .font(.caption)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
                     .padding(.horizontal, 12).padding(.vertical, 6)
                     .background(Color.white.opacity(0.12))
                     .clipShape(Capsule())

@@ -40,18 +40,27 @@ struct ChatSettingsSheet: View {
                                 
                                 Spacer()
                                 
-                                Picker("", selection: $vm.selectedModelName) {
-                                    if vm.selectedModelName == settings.localized("no_model_selected") {
-                                        Text(settings.localized("no_model_selected")).tag(settings.localized("no_model_selected"))
+                                Menu {
+                                    Picker("", selection: $vm.selectedModelName) {
+                                        if vm.selectedModelName == settings.localized("no_model_selected") {
+                                            Text(settings.localized("no_model_selected")).tag(settings.localized("no_model_selected"))
+                                        }
+                                        ForEach(downloadedModels) { model in
+                                            Text(model.name).tag(model.name)
+                                        }
                                     }
-                                    ForEach(downloadedModels) { model in
-                                        Text(model.name).tag(model.name)
+                                } label: {
+                                    HStack(spacing: 6) {
+                                        Text(vm.selectedModelName)
+                                            .lineLimit(1)
+                                            .truncationMode(.tail)
+                                        Image(systemName: "chevron.up.chevron.down")
+                                            .font(.system(size: 10, weight: .bold))
                                     }
+                                    .foregroundColor(ApolloPalette.accentStrong)
+                                    // ensure it aligns properly and can shrink
+                                    .multilineTextAlignment(.trailing)
                                 }
-                                .pickerStyle(.menu)
-                                .accentColor(ApolloPalette.accentStrong)
-                                .labelsHidden()
-                                .fixedSize()
                             }
                             .frame(maxWidth: .infinity)
                         }
