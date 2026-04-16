@@ -657,7 +657,19 @@ class ChatViewModel: ObservableObject {
     var approximateContextTokensUsed: Double {
         let startIndex = max(0, min(messages.count, contextResetStartBySessionId[currentSessionId] ?? 0))
         let visibleMessages = Array(messages.dropFirst(startIndex))
-        let messageChars = visibleMessages.reduce(0) { $0 + $1.content.count }
+        // Strip thinking blocks — they are NOT re-sent as history in multi-turn prompts,
+        // so they should not count toward the context window budget.
+        // During the streaming thinking phase (no answer yet), count 0 for that message.
+        let messageChars = visibleMessages.reduce(0) { acc, msg in
+            if msg.isFromUser {
+                return acc + msg.content.count
+            }
+            if contentHasThinkingMarkers(msg.content) {
+                let answer = getDisplayContentWithoutThinking(msg.content)
+                return acc + answer.count     // 0 while still thinking
+            }
+            return acc + msg.content.count
+        }
         let composerChars = inputText.count
         // When RAG is disabled the attached doc is stuffed into system prompt — count it.
         let docChars = isRagEnabled ? 0 : pendingAttachedDocumentChars
@@ -1271,7 +1283,14 @@ class ChatViewModel: ObservableObject {
 
         if let idx = targetIndex, !messages[idx].isFromUser {
             var msgs = self.messages
-            msgs[idx].content = normalizeStreamText(content)
+            let normalizedContent = normalizeStreamText(content)
+            let parsed = parseThinkingAndAnswer(normalizedContent)
+            if contentHasThinkingMarkers(normalizedContent) || !parsed.thinking.isEmpty {
+                print(
+                    "🧠 [ThinkingDebug][chat] isGenerating=\(isGenerating) rawChars=\(content.count) normalizedChars=\(normalizedContent.count) thinkingChars=\(parsed.thinking.count) answerChars=\(parsed.answer.count) preview=\(String(normalizedContent.prefix(120)))"
+                )
+            }
+            msgs[idx].content = normalizedContent
             msgs[idx].isGenerating = isGenerating
             self.totalTokens = tokens
             self.tokensPerSecond = tps
@@ -1341,10 +1360,13 @@ class ChatViewModel: ObservableObject {
 
             if AppSettings.shared.autoReadoutEnabled {
                 let finishedMessage = msgs[idx]
-                let content = finishedMessage.content.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !content.isEmpty {
+                let rawContent = finishedMessage.content.trimmingCharacters(in: .whitespacesAndNewlines)
+                // Speak only the answer portion — never read out thinking tokens.
+                let ttsContent = getDisplayContentWithoutThinking(rawContent)
+                let speakText = ttsContent.isEmpty ? rawContent : ttsContent
+                if !speakText.isEmpty {
                     ttsManager.speak(
-                        content,
+                        speakText,
                         fallbackLanguage: AppSettings.shared.selectedLanguage,
                         key: finishedMessage.id.uuidString
                     )
@@ -1504,9 +1526,11 @@ class ChatViewModel: ObservableObject {
     @MainActor
     func buildMultiTurnPrompt(currentUserPrompt: String, ragPrefix: String? = nil) -> String {
         let modelName = selectedModelName.lowercased()
+        let modelSupportsThinking = chatModel(named: selectedModelName)?.supportsThinking == true
         let isGemma  = modelName.contains("gemma")
         let isGemma4 = isGemma && (modelName.contains("gemma 4") || modelName.contains("gemma-4"))
         let isLlama  = modelName.contains("llama") || modelName.contains("mistral")
+        let isHarmonyModel = modelName.contains("gpt-oss") || modelName.contains("gpt_oss")
 
         // 1. Identify history (exclude placeholder turns)
         var history: [ChatMessage] = messages.count >= 2 ? Array(messages.dropLast(2)) : []
@@ -1520,10 +1544,16 @@ class ChatViewModel: ObservableObject {
         
         // Walk backwards through history to keep most recent turns
         for msg in history.reversed() {
-            let msgLen = msg.content.count
-            if currentChars + msgLen < maxHistoryChars {
+            // For context budget, count only the answer portion (thinking is stripped)
+            let effectiveLen: Int
+            if !msg.isFromUser && contentHasThinkingMarkers(msg.content) {
+                effectiveLen = getDisplayContentWithoutThinking(msg.content).count
+            } else {
+                effectiveLen = msg.content.count
+            }
+            if currentChars + effectiveLen < maxHistoryChars {
                 truncatedHistory.insert(msg, at: 0)
-                currentChars += msgLen
+                currentChars += effectiveLen
             } else {
                 break // Stop adding older messages
             }
@@ -1536,6 +1566,37 @@ class ChatViewModel: ObservableObject {
         // Prepend the RAW prompt sentinel for the RunAnywhere SDK
         // This prevents the SDK from wrapping our already-formatted string.
         parts.append("__RAW_PROMPT__")
+
+        if isHarmonyModel {
+            var harmonyParts: [String] = []
+            let systemContent = ragPrefix?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let effectiveSystem = systemContent.isEmpty ? "You are a helpful assistant." : systemContent
+            harmonyParts.append("<|start|>system<|message|>\(effectiveSystem)<|end|>")
+
+            for msg in history {
+                let rawContent = msg.content.trimmingCharacters(in: .whitespacesAndNewlines)
+                let content: String
+                if msg.isFromUser {
+                    content = rawContent
+                } else {
+                    let answer = getDisplayContentWithoutThinking(rawContent)
+                    content = answer.isEmpty ? rawContent : answer
+                }
+                guard !content.isEmpty else { continue }
+
+                let role = msg.isFromUser ? "user" : "assistant"
+                harmonyParts.append("<|start|>\(role)<|message|>\(content)<|end|>")
+            }
+
+            harmonyParts.append("<|start|>user<|message|>\(currentUserPrompt)<|end|>")
+            if modelSupportsThinking && enableThinking {
+                harmonyParts.append("<|start|>assistant")
+            } else {
+                harmonyParts.append("<|start|>assistant<|channel|>analysis<|message|><|end|><|start|>assistant<|channel|>final<|message|>")
+            }
+            parts.append(contentsOf: harmonyParts)
+            return parts.joined()
+        }
 
         // Optionally inject RAG context or System Message as an opening turn.
         if let rag = ragPrefix, !rag.isEmpty {
@@ -1552,7 +1613,16 @@ class ChatViewModel: ObservableObject {
 
         // Add history turns
         for msg in history {
-            let content = msg.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            // Strip thinking blocks from assistant messages — the reasoning chain should
+            // not be re-fed into the context window as "said text".
+            let rawContent = msg.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            let content: String
+            if msg.isFromUser {
+                content = rawContent
+            } else {
+                let answer = getDisplayContentWithoutThinking(rawContent)
+                content = answer.isEmpty ? rawContent : answer
+            }
             guard !content.isEmpty else { continue }
 
             if isGemma4 {
@@ -1596,6 +1666,7 @@ class ChatViewModel: ObservableObject {
 struct MessageBubble: View {
     @EnvironmentObject var settings: AppSettings
     let message: ChatMessage
+    let preferThinkingWhileStreaming: Bool
     let onCopy: () -> Void
     let onOpenImage: ((String) -> Void)?
     let onEditUserMessage: ((String) -> Void)?
@@ -1745,12 +1816,17 @@ struct MessageBubble: View {
                             .foregroundColor(.white.opacity(0.68))
                         }
                     } else {
-                        RenderMessageSegments(displayContent: message.content)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.vertical, 4)
-                            .onLongPressGesture {
-                                showActions = true
-                            }
+                        ThinkingAwareResultContent(
+                            content: message.content,
+                            isGenerating: message.isGenerating,
+                            preferThinkingWhileStreaming: preferThinkingWhileStreaming,
+                            useChatRenderer: true
+                        )
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 4)
+                        .onLongPressGesture {
+                            showActions = true
+                        }
                     }
                 }
             }
@@ -1816,10 +1892,20 @@ struct MessageBubble: View {
                        let tokenCount = message.tokenCount,
                        let tps = message.tokensPerSecond,
                        tokenCount > 0 {
-                        Spacer()
-                        Label(String(format: settings.localized("tokens_per_second_format"), tokenCount, tps), systemImage: "bolt.fill")
-                            .font(.caption2)
-                            .foregroundColor(.white.opacity(0.63))
+                        // Only show stats once thinking is done and there's an answer.
+                        // While still in the thinking phase, hide the token badge entirely
+                        // so thinking tokens never appear in the count.
+                        let hasMarkers = contentHasThinkingMarkers(message.content)
+                        let answer = hasMarkers ? getDisplayContentWithoutThinking(message.content) : message.content
+                        if !hasMarkers || !answer.isEmpty {
+                            Spacer()
+                            let thinkingChars = parseThinkingAndAnswer(message.content).thinking.count
+                            let thinkingTokenEst = max(0, thinkingChars / 4)
+                            let answerTokenCount = max(1, tokenCount - thinkingTokenEst)
+                            Label(String(format: settings.localized("tokens_per_second_format"), answerTokenCount, tps), systemImage: "bolt.fill")
+                                .font(.caption2)
+                                .foregroundColor(.white.opacity(0.63))
+                        }
                     }
                 }
             }
@@ -1889,7 +1975,7 @@ private enum ParsedSegment: Hashable {
     case table(String)
 }
 
-private struct RenderMessageSegments: View {
+struct RenderMessageSegments: View {
     let displayContent: String
 
     var body: some View {
@@ -2389,11 +2475,14 @@ struct ChatScreen: View {
                                 let canRegenerate = isLatestAssistant && !vm.isGenerating && !msg.isGenerating
                                 let canEditUser = msg.isFromUser && msg.id == vm.latestUserMessageId && !vm.isGenerating
                                 let canEditAssistant = !msg.isFromUser && !vm.isGenerating && !msg.isGenerating
+                                let modelSupportsThinking = chatModel(named: vm.selectedModelName)?.supportsThinking == true
+                                let useStreamingThinkingHeuristic = supportsUnmarkedStreamingThinkingHeuristic(forModelNamed: vm.selectedModelName)
                                 let regenerateAction: (() -> Void)? = canRegenerate ? {
                                     vm.regenerateResponse(for: msg.id)
                                 } : nil
                                 MessageBubble(
                                     message: msg,
+                                    preferThinkingWhileStreaming: modelSupportsThinking && vm.enableThinking && useStreamingThinkingHeuristic,
                                     onCopy: {
                                         vm.copyMessage(msg)
                                         copiedMessageId = msg.id

@@ -391,8 +391,17 @@ private func sanitizeModelOutputText(_ text: String) -> String {
         .replacingOccurrences(of: "â€“", with: "-")
         .replacingOccurrences(of: "â€”", with: "-")
         .replacingOccurrences(of: "�", with: "'")
+    .replacingOccurrences(of: "<|startoftext|>", with: "")
     .replacingOccurrences(of: "<|im_start|>assistant", with: "")
     .replacingOccurrences(of: "<|im_end|>", with: "")
+    .replacingOccurrences(of: "<|start|>assistant<|channel|>final<|message|>", with: "")
+    .replacingOccurrences(of: "<|start|>assistant<|channel|>analysis<|message|>", with: "")
+    .replacingOccurrences(of: "<|start|>assistant", with: "")
+    .replacingOccurrences(of: "<|channel|>final<|message|>", with: "")
+    .replacingOccurrences(of: "<|channel|>analysis<|message|>", with: "")
+    .replacingOccurrences(of: "analysis<|message|>", with: "")
+    .replacingOccurrences(of: "<|message|>", with: "")
+    .replacingOccurrences(of: "<|end|>", with: "")
     .replacingOccurrences(of: "<|turn>model", with: "")
     .replacingOccurrences(of: "<|turn>user", with: "")
     .replacingOccurrences(of: "<|turn>", with: "")
@@ -1930,12 +1939,73 @@ private struct IOS17VibeVoiceScreen: View {
 
         // 3. Family Detection
         let modelName = selectedModelName.lowercased()
+        let modelSupportsThinking = selectedFeatureModel(named: selectedModelName)?.supportsThinking == true
         let isGemma  = modelName.contains("gemma")
         let isGemma4 = isGemma && (modelName.contains("gemma 4 ") || modelName.contains("gemma-4 ") || modelName.hasSuffix("gemma 4") || modelName.hasSuffix("gemma-4"))
         let isLlama  = modelName.contains("llama") || modelName.contains("mistral")
+        let isHarmonyModel = modelName.contains("gpt-oss") || modelName.contains("gpt_oss")
 
         // 4. Build Raw Prompt (Prepend __RAW_PROMPT__ to bypass SDK auto-formatting)
         var parts: [String] = ["__RAW_PROMPT__"]
+
+        if isHarmonyModel {
+            var harmonyParts: [String] = []
+            harmonyParts.append("<|start|>system<|message|>\(systemPrompt)<|end|>")
+
+            for msg in truncatedHistory {
+                let content = msg.content.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !content.isEmpty else { continue }
+                let role = msg.role == "user" ? "user" : "assistant"
+                harmonyParts.append("<|start|>\(role)<|message|>\(content)<|end|>")
+            }
+
+            if modelSupportsThinking && llm.enableThinking {
+                harmonyParts.append("<|start|>assistant")
+            } else {
+                harmonyParts.append("<|start|>assistant<|channel|>analysis<|message|><|end|><|start|>assistant<|channel|>final<|message|>")
+            }
+            parts.append(contentsOf: harmonyParts)
+            let multiTurnPrompt = parts.joined()
+
+            generationTask = Task {
+                do {
+                    try await llm.generate(
+                        prompt: multiTurnPrompt,
+                        maxTokensOverride: Int(maxTokens)
+                    ) { content, _, _ in
+                        Task { @MainActor in
+                            let sanitized = sanitizeModelOutputText(content)
+                            let answerSoFar = getDisplayContentWithoutThinking(sanitized)
+                            self.latestReply = answerSoFar
+                        }
+                    }
+                } catch {
+                    NSLog("[LLMHub][VibeVoice] LLM error: \(error.localizedDescription)")
+                }
+                await MainActor.run {
+                    self.generationTask = nil
+                    guard self.isChatActive else { return }
+                    let rawReply = self.latestReply.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !rawReply.isEmpty {
+                        let answerOnly = getDisplayContentWithoutThinking(rawReply)
+                        let replyForTts = answerOnly.isEmpty ? rawReply : answerOnly
+                        self.latestReply = replyForTts
+                        self.conversationHistory.append((role: "assistant", content: replyForTts))
+                        self.voiceState = .speaking
+                        self.ttsManager.speak(replyForTts, fallbackLanguage: self.settings.selectedLanguage, key: self.ttsKey)
+                    } else {
+                        self.voiceState = .idle
+                        Task { @MainActor in
+                            try? await Task.sleep(nanoseconds: 350_000_000)
+                            if self.isChatActive {
+                                await self.startListeningCycle()
+                            }
+                        }
+                    }
+                }
+            }
+            return
+        }
         
         // When using RAW_PROMPT, the SDK's systemPrompt argument is ignored, 
         // so we must inject it manually into our sequence.
@@ -1990,7 +2060,11 @@ private struct IOS17VibeVoiceScreen: View {
                     maxTokensOverride: Int(maxTokens)
                 ) { content, _, _ in
                     Task { @MainActor in
-                        self.latestReply = sanitizeModelOutputText(content)
+                        let sanitized = sanitizeModelOutputText(content)
+                        // During streaming, show only the answer portion — never show thinking tokens
+                        // in the voice UI card. While still in thinking phase the card is hidden.
+                        let answerSoFar = getDisplayContentWithoutThinking(sanitized)
+                        self.latestReply = answerSoFar
                     }
                 }
             } catch {
@@ -1999,12 +2073,17 @@ private struct IOS17VibeVoiceScreen: View {
             await MainActor.run {
                 self.generationTask = nil
                 guard self.isChatActive else { return }
-                let reply = self.latestReply.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !reply.isEmpty {
-                    // Store assistant reply in conversation history
-                    self.conversationHistory.append((role: "assistant", content: reply))
+                let rawReply = self.latestReply.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !rawReply.isEmpty {
+                    // Strip thinking tokens: store only the answer in history and speak only the answer.
+                    let answerOnly = getDisplayContentWithoutThinking(rawReply)
+                    let replyForTts = answerOnly.isEmpty ? rawReply : answerOnly
+                    // Update latestReply UI with stripped content so the card shows only the answer
+                    self.latestReply = replyForTts
+                    // Store answer (not thinking chain) in conversation history
+                    self.conversationHistory.append((role: "assistant", content: replyForTts))
                     self.voiceState = .speaking
-                    self.ttsManager.speak(reply, fallbackLanguage: self.settings.selectedLanguage, key: self.ttsKey)
+                    self.ttsManager.speak(replyForTts, fallbackLanguage: self.settings.selectedLanguage, key: self.ttsKey)
                 } else {
                     self.voiceState = .idle
                     Task { @MainActor in
@@ -2156,7 +2235,7 @@ struct WritingAidScreen: View {
 
                             Button {
                                 ttsManager.toggleSpeaking(
-                                    outputText,
+                                    getDisplayContentWithoutThinking(outputText),
                                     fallbackLanguage: settings.selectedLanguage,
                                     key: "writing-aid-output"
                                 )
@@ -2170,7 +2249,7 @@ struct WritingAidScreen: View {
 
                             Button {
                                 #if canImport(UIKit)
-                                UIPasteboard.general.string = outputText
+                                UIPasteboard.general.string = getDisplayContentWithoutThinking(outputText)
                                 #endif
                             } label: {
                                 Image(systemName: "doc.on.doc")
@@ -2197,12 +2276,25 @@ struct WritingAidScreen: View {
                         VStack(alignment: .leading, spacing: 8) {
                             Text(settings.localized("writing_aid_result"))
                                 .font(.headline)
-                            Text(outputText.isEmpty ? "-" : outputText)
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                            if outputText.isEmpty {
+                                Text("-")
+                                    .textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(10)
+                                    .background(.ultraThinMaterial)
+                                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                            } else {
+                                ThinkingAwareResultContent(
+                                    content: outputText,
+                                    isGenerating: isProcessing,
+                                    preferThinkingWhileStreaming: enableThinking
+                                        && (selectedFeatureModel(named: selectedModelName)?.supportsThinking == true)
+                                        && supportsUnmarkedStreamingThinkingHeuristic(forModelNamed: selectedModelName)
+                                )
                                 .padding(10)
                                 .background(.ultraThinMaterial)
                                 .clipShape(RoundedRectangle(cornerRadius: 12))
+                            }
                         }
                         .padding(.horizontal)
                     }
@@ -3087,7 +3179,7 @@ struct ScamDetectorScreen: View {
 
                             Button {
                                 ttsManager.toggleSpeaking(
-                                    outputText,
+                                    getDisplayContentWithoutThinking(outputText),
                                     fallbackLanguage: settings.selectedLanguage,
                                     key: "scam-detector-output"
                                 )
@@ -3101,7 +3193,7 @@ struct ScamDetectorScreen: View {
 
                             Button {
                                 #if canImport(UIKit)
-                                UIPasteboard.general.string = outputText
+                                UIPasteboard.general.string = getDisplayContentWithoutThinking(outputText)
                                 #endif
                             } label: {
                                 Image(systemName: "doc.on.doc")
@@ -3161,13 +3253,27 @@ struct ScamDetectorScreen: View {
                         VStack(alignment: .leading, spacing: 8) {
                             Text(settings.localized("scam_detector_result"))
                                 .font(.headline)
-                            Text(outputText.isEmpty ? "-" : outputText)
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                            if outputText.isEmpty {
+                                Text("-")
+                                    .textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .frame(minHeight: 140, alignment: .topLeading)
+                                    .padding(10)
+                                    .background(.ultraThinMaterial)
+                                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                            } else {
+                                ThinkingAwareResultContent(
+                                    content: outputText,
+                                    isGenerating: isAnalyzing,
+                                    preferThinkingWhileStreaming: enableThinking
+                                        && (selectedFeatureModel(named: selectedModelName)?.supportsThinking == true)
+                                        && supportsUnmarkedStreamingThinkingHeuristic(forModelNamed: selectedModelName)
+                                )
                                 .frame(minHeight: 140, alignment: .topLeading)
                                 .padding(10)
                                 .background(.ultraThinMaterial)
                                 .clipShape(RoundedRectangle(cornerRadius: 12))
+                            }
                         }
                         .padding(.horizontal)
                     }
@@ -3738,7 +3844,19 @@ struct VibeCoderScreen: View {
     }
 
     private var approximateContextTokensUsed: Double {
-        let activeTextChars = activeMessages.reduce(0) { $0 + $1.text.count }
+        // Strip thinking blocks from assistant messages — only answer text is re-sent
+        // in the multi-turn prompt, so thinking should not count toward the budget.
+        // During the streaming thinking phase (no answer yet), count 0 for that message.
+        let activeTextChars = activeMessages.reduce(0) { acc, msg in
+            if msg.role == "user" {
+                return acc + msg.text.count
+            }
+            if contentHasThinkingMarkers(msg.text) {
+                let answer = getDisplayContentWithoutThinking(msg.text)
+                return acc + answer.count     // 0 while still thinking
+            }
+            return acc + msg.text.count
+        }
         let codeChars = generatedCode.count
         let inputChars = chatInput.count
         let totalChars = activeTextChars + codeChars + inputChars
@@ -3767,6 +3885,20 @@ struct VibeCoderScreen: View {
 
     private var isContextBudgetExceededForSession: Bool {
         contextUsageFractionRaw >= 0.995
+    }
+
+    private var deleteChatAlertBinding: Binding<Bool> {
+        Binding(
+            get: { pendingDeleteChatId != nil },
+            set: { if !$0 { pendingDeleteChatId = nil } }
+        )
+    }
+
+    private var deleteFileAlertBinding: Binding<Bool> {
+        Binding(
+            get: { pendingDeleteFileURL != nil },
+            set: { if !$0 { pendingDeleteFileURL = nil } }
+        )
     }
 
     var body: some View {
@@ -3906,8 +4038,10 @@ struct VibeCoderScreen: View {
                                                             Spacer()
                                                             if message.role != "user" && !message.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                                                                 Button {
+                                                                    // Speak only the answer, never thinking tokens
+                                                                    let speakText = getDisplayContentWithoutThinking(message.text)
                                                                     ttsManager.toggleSpeaking(
-                                                                        message.text,
+                                                                        speakText.isEmpty ? message.text : speakText,
                                                                         fallbackLanguage: settings.selectedLanguage,
                                                                         key: "vibe-chat-\(message.id.uuidString)"
                                                                     )
@@ -3919,12 +4053,25 @@ struct VibeCoderScreen: View {
                                                                 .foregroundStyle(.white.opacity(0.68))
                                                             }
                                                         }
-                                                        Text(message.text)
-                                                            .textSelection(.enabled)
-                                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                                        if message.role == "user" {
+                                                            Text(message.text)
+                                                                .textSelection(.enabled)
+                                                                .frame(maxWidth: .infinity, alignment: .leading)
+                                                                .padding(8)
+                                                                .background(.ultraThinMaterial)
+                                                                .clipShape(RoundedRectangle(cornerRadius: 10))
+                                                        } else {
+                                                            ThinkingAwareResultContent(
+                                                                content: message.text,
+                                                                isGenerating: isGenerating && message.id == activeMessages.last?.id,
+                                                                preferThinkingWhileStreaming: enableThinking
+                                                                    && (selectedFeatureModel(named: selectedModelName)?.supportsThinking == true)
+                                                                    && supportsUnmarkedStreamingThinkingHeuristic(forModelNamed: selectedModelName)
+                                                            )
                                                             .padding(8)
                                                             .background(.ultraThinMaterial)
                                                             .clipShape(RoundedRectangle(cornerRadius: 10))
+                                                        }
                                                     }
                                                     .id(message.id)
                                                 }
@@ -4164,7 +4311,11 @@ struct VibeCoderScreen: View {
             Task {
                 await syncRunAnywhereModelDiscovery()
                 let available = downloadableFeatureModels().filter(isNonTranslatorFeatureModel)
-                if selectedModelName.isEmpty || !available.contains(where: { $0.name == selectedModelName }) {
+                let hasSelectedModelName = !selectedModelName.isEmpty
+                let selectedModelExists = available.contains { model in
+                    model.name == selectedModelName
+                }
+                if !hasSelectedModelName || !selectedModelExists {
                     selectedModelName = available.first?.name ?? ""
                 }
             }
@@ -4208,14 +4359,11 @@ struct VibeCoderScreen: View {
                 }
             }
         }
-        .fileImporter(isPresented: $showWorkspaceFolderPicker, allowedContentTypes: [.folder]) { result in
-            switch result {
-            case .success(let url):
-                setWorkspaceFolder(url)
-            case .failure(let error):
-                errorMessage = error.localizedDescription
-            }
-        }
+        .fileImporter(
+            isPresented: $showWorkspaceFolderPicker,
+            allowedContentTypes: [.folder],
+            onCompletion: handleWorkspaceFolderImport
+        )
         .alert(settings.localized("vibe_coder_create_file_title"), isPresented: $showCreateFileDialog) {
             TextField(settings.localized("vibe_coder_file_name_placeholder"), text: $newFileNameInput)
             Button(settings.localized("cancel"), role: .cancel) {}
@@ -4223,10 +4371,7 @@ struct VibeCoderScreen: View {
                 createNewFile()
             }
         }
-        .alert(settings.localized("vibe_coder_delete_chat_title"), isPresented: Binding(
-            get: { pendingDeleteChatId != nil },
-            set: { if !$0 { pendingDeleteChatId = nil } }
-        )) {
+        .alert(settings.localized("vibe_coder_delete_chat_title"), isPresented: deleteChatAlertBinding) {
             Button(settings.localized("cancel"), role: .cancel) { pendingDeleteChatId = nil }
             Button(settings.localized("delete"), role: .destructive) {
                 if let id = pendingDeleteChatId {
@@ -4236,10 +4381,7 @@ struct VibeCoderScreen: View {
         } message: {
             Text(settings.localized("vibe_coder_delete_chat_message"))
         }
-        .alert(settings.localized("vibe_coder_delete_file_title"), isPresented: Binding(
-            get: { pendingDeleteFileURL != nil },
-            set: { if !$0 { pendingDeleteFileURL = nil } }
-        )) {
+        .alert(settings.localized("vibe_coder_delete_file_title"), isPresented: deleteFileAlertBinding) {
             Button(settings.localized("cancel"), role: .cancel) { pendingDeleteFileURL = nil }
             Button(settings.localized("delete"), role: .destructive) {
                 if let fileURL = pendingDeleteFileURL {
@@ -4273,6 +4415,16 @@ struct VibeCoderScreen: View {
     private var isHTMLFile: Bool {
         let ext = normalizedExtension(currentFileName)
         return ext == "html" || ext == "htm"
+    }
+
+    private func handleWorkspaceFolderImport(_ result: Result<URL, Error>) {
+        switch result {
+        case .success(let url):
+            setWorkspaceFolder(url)
+        case .failure(let error):
+            let message = error.localizedDescription
+            errorMessage = message
+        }
     }
 
     private func languagePromptConfig() -> (languageName: String, targetRule: String, fenceLanguage: String)? {
@@ -4665,9 +4817,11 @@ struct VibeCoderScreen: View {
     /// prior coding requests. Uses RAW_PROMPT to bypass SDK re-formatting.
     private func buildVibeCoderMultiTurnPrompt(currentFilePrompt: String, sessionId: UUID) -> String {
         let modelName = selectedModelName.lowercased()
+        let modelSupportsThinking = selectedFeatureModel(named: selectedModelName)?.supportsThinking == true
         let isGemma  = modelName.contains("gemma")
         let isGemma4 = isGemma && (modelName.contains("gemma 4 ") || modelName.contains("gemma-4 ") || modelName.hasSuffix("gemma 4") || modelName.hasSuffix("gemma-4"))
         let isLlama  = modelName.contains("llama") || modelName.contains("mistral")
+        let isHarmonyModel = modelName.contains("gpt-oss") || modelName.contains("gpt_oss")
 
         // 1. Get history (exclude placeholder turns)
         var allMessages: [VibeChatMessage] = []
@@ -4698,6 +4852,35 @@ struct VibeCoderScreen: View {
 
         // 4. System Prompt (Coding Assistant)
         let systemPrompt = "You are VibeCoder, a world-class on-device coding assistant. Provide clean, efficient, and correct code. Use markdown code blocks with language tags."
+
+        if isHarmonyModel {
+            var harmonyParts: [String] = []
+            harmonyParts.append("<|start|>system<|message|>\(systemPrompt)<|end|>")
+
+            for msg in truncatedHistory {
+                let rawText = msg.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                let content: String
+                if msg.role == "user" {
+                    content = rawText
+                } else {
+                    let answer = getDisplayContentWithoutThinking(rawText)
+                    content = answer.isEmpty ? rawText : answer
+                }
+                guard !content.isEmpty else { continue }
+
+                let role = msg.role == "user" ? "user" : "assistant"
+                harmonyParts.append("<|start|>\(role)<|message|>\(content)<|end|>")
+            }
+
+            harmonyParts.append("<|start|>user<|message|>\(currentFilePrompt)<|end|>")
+            if modelSupportsThinking && llm.enableThinking {
+                harmonyParts.append("<|start|>assistant")
+            } else {
+                harmonyParts.append("<|start|>assistant<|channel|>analysis<|message|><|end|><|start|>assistant<|channel|>final<|message|>")
+            }
+            parts.append(contentsOf: harmonyParts)
+            return parts.joined()
+        }
         
         if isGemma4 {
             parts.append("<|turn>system\n\(systemPrompt)<turn|>")
@@ -4710,7 +4893,16 @@ struct VibeCoderScreen: View {
         }
 
         for msg in truncatedHistory {
-            let content = msg.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            // Strip thinking blocks from assistant messages so the reasoning chain
+            // is not re-fed into the context window.
+            let rawText = msg.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let content: String
+            if msg.role == "user" {
+                content = rawText
+            } else {
+                let answer = getDisplayContentWithoutThinking(rawText)
+                content = answer.isEmpty ? rawText : answer
+            }
             guard !content.isEmpty else { continue }
 
             if isGemma4 {

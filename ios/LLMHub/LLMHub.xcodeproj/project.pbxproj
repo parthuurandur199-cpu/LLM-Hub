@@ -33,6 +33,7 @@
 		CB9C318430890100AF670AFF /* SettingsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = A587C281FC51DF179CF26022 /* SettingsScreen.swift */; };
 		CBC2016A51F62C4A68987D57 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F7A456876803C1FBBE0A211 /* ContentView.swift */; };
 		DF4968608455CAC5D2C20BE3 /* ChatSettingsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = E06F261B9A91F8AA8BAA4778 /* ChatSettingsSheet.swift */; };
+		A1B2C3D4E5F600001A2B3C4D /* ThinkingComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F600002A2B3C4D /* ThinkingComponents.swift */; };
 		E534E3B14352A9FCAA9F1A89 /* RunAnywhereLlamaCPP in Frameworks */ = {isa = PBXBuildFile; productRef = 72F0EB7DB1F54E3913BC8763 /* RunAnywhereLlamaCPP */; };
 		FA001122334455667788AABB /* StableDiffusionBackend.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA001122334455667788AACC /* StableDiffusionBackend.swift */; };
 		FA001122334455667788AADD /* StableDiffusion in Frameworks */ = {isa = PBXBuildFile; productRef = FA001122334455667788AAEE /* StableDiffusion */; };
@@ -82,6 +83,7 @@
 		F5C1B532F7D3AE6F20EB4AEC /* he */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = he; path = he.lproj/Localizable.strings; sourceTree = "<group>"; };
 		F841EEA264BDE0E6E2A1BC18 /* Icon.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = Icon.png; sourceTree = "<group>"; };
 		FA001122334455667788AACC /* StableDiffusionBackend.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StableDiffusionBackend.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F600002A2B3C4D /* ThinkingComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThinkingComponents.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -136,6 +138,7 @@
 				5D54909FE8CC139164BABB54 /* ModelManager.swift */,
 				A587C281FC51DF179CF26022 /* SettingsScreen.swift */,
 				FA001122334455667788AACC /* StableDiffusionBackend.swift */,
+				A1B2C3D4E5F600002A2B3C4D /* ThinkingComponents.swift */,
 			);
 			name = LLMHub;
 			path = Sources/LLMHub;
@@ -276,6 +279,7 @@
 				8372657E94B22EF042E769D9 /* ModelManager.swift in Sources */,
 				CB9C318430890100AF670AFF /* SettingsScreen.swift in Sources */,
 				FA001122334455667788AABB /* StableDiffusionBackend.swift in Sources */,
+				A1B2C3D4E5F600001A2B3C4D /* ThinkingComponents.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

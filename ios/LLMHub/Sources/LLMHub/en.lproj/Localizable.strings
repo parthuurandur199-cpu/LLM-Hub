@@ -70,6 +70,8 @@
 "ai_thinking" = "AI is thinking...";
 "thinking_label" = "Thinking";
 "thinking_tokens" = "Thinking (%1$d tokens)";
+"enable_thinking" = "Enable Thinking";
+"thinking_toggle_label" = "Enable Thinking";
 "version_number" = "Version 3.7.1";
 "app_version" = "App Version";
 "terms_of_service" = "Terms of Service";
