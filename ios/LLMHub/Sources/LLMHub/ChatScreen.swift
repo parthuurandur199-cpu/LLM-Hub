@@ -2680,6 +2680,7 @@ struct ChatScreen: View {
         }
         .sheet(isPresented: $showSettings) {
              ChatSettingsSheet(vm: vm)
+                .environmentObject(settings)
         }
         .fullScreenCover(isPresented: Binding(
             get: { previewImagePath != nil },
@@ -2701,6 +2702,7 @@ struct ChatScreen: View {
                 onNavigateToModels: onNavigateToModels,
                 onNavigateToSettings: onNavigateToSettings
             )
+            .environmentObject(settings)
         }
         // Audio transcribe importer stays here as the primary chain modifier.
         .fileImporter(
