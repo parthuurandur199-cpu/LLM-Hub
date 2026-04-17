@@ -109,6 +109,7 @@ android {
         jniLibs {
             useLegacyPackaging = true
             pickFirsts += setOf("**/libmediapipe_tasks_text_jni.so")
+            pickFirsts += setOf("**/libonnxruntime.so")
             excludes += setOf("**/libdeepseek-ocr.so")
             excludes += setOf("**/libstable-diffusion.so")
         }
