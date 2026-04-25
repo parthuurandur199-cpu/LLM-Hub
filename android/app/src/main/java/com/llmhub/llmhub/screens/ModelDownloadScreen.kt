@@ -1404,24 +1404,24 @@ private fun ImportExternalModelDialog(
                         }
                     } ?: 0L
                     
-                    // For image models (QNN_NPU or MNN_CPU), we need to extract the ZIP first
-                    if (modelFormat == ModelFormat.QNN_NPU || modelFormat == ModelFormat.MNN_CPU) {
-                        // Mark as extracting
+                                        // For models that require ZIP extraction (Image models and MNN_LLM)
+                    if (modelFormat == ModelFormat.QNN_NPU || modelFormat == ModelFormat.MNN_CPU || modelFormat == ModelFormat.MNN_LLM) {
+                        val isMnnLlm = modelFormat == ModelFormat.MNN_LLM
+                        val actualVision = if (isMnnLlm) supportsVision else false
+                        val actualAudio = if (isMnnLlm) supportsAudio else false
+                        
                         val externalModel = LLMModel(
                             name = modelName,
-                            description = "Custom image generation model: $modelName",
+                            description = if (isMnnLlm) "Custom LLM model: $modelName" else "Custom image generation model: $modelName",
                             url = selectedFileUri.toString(),
-                            category = modelFormat.name.lowercase(),
+                            category = if (isMnnLlm) (if (actualVision || actualAudio) "multimodal" else "text") else modelFormat.name.lowercase(),
                             sizeBytes = fileSize,
                             source = "Custom",
-                            supportsVision = false,
-                            supportsAudio = false,
-                            supportsGpu = false,
-                            requirements = ModelRequirements(
-                                minRamGB = 2,
-                                recommendedRamGB = 4
-                            ),
-                            contextWindowSize = 0,
+                            supportsVision = actualVision,
+                            supportsAudio = actualAudio,
+                            supportsGpu = if (isMnnLlm) supportsGpu else false,
+                            requirements = ModelRequirements(minRamGB = 4, recommendedRamGB = 8),
+                            contextWindowSize = if (isMnnLlm) contextWindowSize.toIntOrNull() ?: 2048 else 0,
                             modelFormat = modelFormat.name.lowercase(),
                             isDownloaded = false,
                             isDownloading = false,
@@ -1434,6 +1434,7 @@ private fun ImportExternalModelDialog(
                             errorMessage = context.getString(R.string.model_name_already_exists, modelName)
                             return@Button
                         }
+
                     } else {
                         // For text models (TASK, LITERTLM, GGUF)
                         // For GGUF: always GPU=true, Vision=false, Audio=false
