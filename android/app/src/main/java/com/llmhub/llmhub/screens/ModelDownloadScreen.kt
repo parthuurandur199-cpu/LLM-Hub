@@ -61,7 +61,7 @@ import android.view.WindowManager
 import androidx.compose.runtime.DisposableEffect
 
 enum class ModelFormat {
-    TASK, LITERTLM, GGUF, QNN_NPU, MNN_CPU
+    TASK, LITERTLM, GGUF, QNN_NPU, MNN_CPU, MNN_LLM
 }
 
 /**
