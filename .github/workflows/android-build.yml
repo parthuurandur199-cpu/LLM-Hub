@@ -25,7 +25,7 @@ jobs:
         working-directory: ./android
         run: chmod +x gradlew
 
-              - name: Fetch MNN-LLM Payload (Cloud Ninja Move)
+      - name: Fetch MNN-LLM Payload (Cloud Ninja Move)
         working-directory: ./android/app/src/main
         run: |
           echo "Creating payload drop zones..."
@@ -41,7 +41,6 @@ jobs:
           cp -r include/* $GITHUB_WORKSPACE/android/app/src/main/cpp/include/
           cp -r transformers/llm/engine/include/* $GITHUB_WORKSPACE/android/app/src/main/cpp/include/
 
-
       - name: Build Android APK
         working-directory: ./android
         run: ./gradlew assembleDebug
@@ -51,4 +50,3 @@ jobs:
         with:
           name: LLM-Hub-Debug-APK
           path: android/app/build/outputs/apk/debug/app-debug.apk
-          
