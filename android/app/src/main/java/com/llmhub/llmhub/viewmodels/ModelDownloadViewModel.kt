@@ -936,11 +936,11 @@ class ModelDownloadViewModel(application: Application) : AndroidViewModel(applic
         
         android.util.Log.d("ModelDownloadViewModel", "Added external model: ${externalModel.name}")
         
-        // If it's an image model (ZIP file), extract it
-        if ((externalModel.category == "qnn_npu" || externalModel.category == "mnn_cpu") && externalModel.isExtracting) {
+                // If it's a ZIP file that needs extracting (Image models or MNN_LLM)
+        if (externalModel.isExtracting) {
             viewModelScope.launch(Dispatchers.IO) {
                 try {
-                    android.util.Log.d("ModelDownloadViewModel", "Extracting imported image model: ${externalModel.name}")
+                    android.util.Log.d("ModelDownloadViewModel", "Extracting imported model: ${externalModel.name}")
 
                     // Ensure UI shows this as an active operation
                     updateModel(externalModel.name) {
@@ -958,19 +958,25 @@ class ModelDownloadViewModel(application: Application) : AndroidViewModel(applic
                         }
                     }
                     
-                    // Extract to sd_models/<modelName> directory so the folder is named after user's chosen name
-                    val sdModelsDir = File(context.filesDir, "sd_models")
-                    if (!sdModelsDir.exists()) {
-                        sdModelsDir.mkdirs()
+                    // Extract to appropriate directory
+                    val targetBaseDir = if (externalModel.modelFormat == "mnn_llm") {
+                        File(context.filesDir, "models") 
+                    } else {
+                        File(context.filesDir, "sd_models")
+                    }
+                    
+                    if (!targetBaseDir.exists()) {
+                        targetBaseDir.mkdirs()
                     }
                     
                     // Create a folder specifically for this model using the user-provided name
-                    val modelTargetDir = File(sdModelsDir, externalModel.name.replace(" ", "_"))
+                    val modelTargetDir = File(targetBaseDir, externalModel.name.replace(" ", "_"))
                     if (modelTargetDir.exists()) {
                         // Clean up previous failed extraction
                         modelTargetDir.deleteRecursively()
                     }
                     modelTargetDir.mkdirs()
+
                     
                     // Extract the ZIP into the model-specific folder
                     val extractSuccess = com.llmhub.llmhub.utils.ZipExtractor.extractZip(
