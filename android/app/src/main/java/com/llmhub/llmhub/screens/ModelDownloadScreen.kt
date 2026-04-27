@@ -1350,7 +1350,7 @@ private fun ImportExternalModelDialog(
                         }
                         
                         // Only show context window for text models (TASK, LITERTLM, GGUF)
-                        if (modelFormat == ModelFormat.TASK || modelFormat == ModelFormat.LITERTLM || modelFormat == ModelFormat.GGUF) {
+                        if (modelFormat == ModelFormat.TASK || modelFormat == ModelFormat.LITERTLM || modelFormat == ModelFormat.GGUF || modelFormat == ModelFormat.MNN_LLM) {
                             val contextWindowError = contextWindowSize.toIntOrNull() == null || contextWindowSize.toIntOrNull()!! <= 0
                             val contextWindowErrorText = stringResource(R.string.context_window_size_invalid)
                             
